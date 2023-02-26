@@ -19,6 +19,11 @@ namespace GunduzDev
         private Vector2 startTouchPos, endTouchPos;
         private float diffW, diffA, diffS, diffD;
 
+        private void OnEnable()
+        {
+            gameManager = GameManager.Instance;
+        }
+
         public void ClearBoard()
         {
             foreach (var cell in grid.cells)    cell.tile = null;

@@ -4,21 +4,14 @@ using UnityEngine;
 
 namespace GunduzDev
 {
-    public class GameManager : MonoBehaviour
+    public class GameManager : MonoSingleton<GameManager>
     {
-        public static GameManager Instance { get; private set; }
-
         public TileBoard board;
         public CanvasGroup gameOver;
         public TextMeshProUGUI scoreText;
         public TextMeshProUGUI highScoreText;
 
         private int score;
-
-        private void Awake()
-        {
-            Instance = this;
-        }
 
         private void Start()
         {
