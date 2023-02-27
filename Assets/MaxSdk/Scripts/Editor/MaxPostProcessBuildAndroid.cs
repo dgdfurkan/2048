@@ -7,13 +7,13 @@
 //
 
 #if UNITY_ANDROID && UNITY_2018_2_OR_NEWER
-
 using AppLovinMax.Scripts.IntegrationManager.Editor;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Xml.Linq;
+using AppLovinMax.ThirdParty.MiniJson;
 using UnityEditor;
 using UnityEditor.Android;
 
@@ -89,6 +89,13 @@ namespace AppLovinMax.Scripts.Editor
             }
 
             ProcessAndroidManifest(path);
+
+            if (AppLovinSettings.Instance.ShowInternalSettingsInIntegrationManager)
+            {
+                // For Unity 2018.1 or older, the consent flow is enabled in AppLovinPreProcessAndroid.
+                var rawResourceDirectory = Path.Combine(path, "src/main/res/raw");
+                AppLovinPreProcessAndroid.EnableConsentFLowIfNeeded(rawResourceDirectory);
+            }
         }
 
         public int callbackOrder
@@ -131,7 +138,6 @@ namespace AppLovinMax.Scripts.Editor
 
             EnableVerboseLoggingIfNeeded(elementApplication);
             AddGoogleApplicationIdIfNeeded(elementApplication, metaDataElements);
-            AddGoogleAdManagerAppMetaDataIfNeeded(elementApplication, metaDataElements);
 
             // Save the updated manifest file.
             manifest.Save(manifestPath);
@@ -176,7 +182,7 @@ namespace AppLovinMax.Scripts.Editor
         private static void AddGoogleApplicationIdIfNeeded(XElement elementApplication, IEnumerable<XElement> metaDataElements)
         {
             var googleApplicationIdMetaData = GetMetaDataElement(metaDataElements, KeyMetaDataGoogleApplicationId);
-            if (!AppLovinIntegrationManager.IsAdapterInstalled("Google"))
+            if (!AppLovinIntegrationManager.IsAdapterInstalled("Google") && !AppLovinIntegrationManager.IsAdapterInstalled("GoogleAdManager"))
             {
                 if (googleApplicationIdMetaData != null) googleApplicationIdMetaData.Remove();
                 return;
@@ -186,7 +192,7 @@ namespace AppLovinMax.Scripts.Editor
             // Log error if the App ID is not set.
             if (string.IsNullOrEmpty(appId) || !appId.StartsWith("ca-app-pub-"))
             {
-                MaxSdkLogger.UserError("AdMob App ID is not set. Please enter a valid app ID within the AppLovin Integration Manager window.");
+                MaxSdkLogger.UserError("Google App ID is not set. Please enter a valid app ID within the AppLovin Integration Manager window.");
                 return;
             }
 
@@ -199,27 +205,6 @@ namespace AppLovinMax.Scripts.Editor
             else
             {
                 elementApplication.Add(CreateMetaDataElement(KeyMetaDataGoogleApplicationId, appId));
-            }
-        }
-
-        private static void AddGoogleAdManagerAppMetaDataIfNeeded(XElement elementApplication, IEnumerable<XElement> metaDataElements)
-        {
-            var googleAdManagerAppMetaData = GetMetaDataElement(metaDataElements, KeyMetaDataGoogleAdManagerApp);
-            if (!AppLovinIntegrationManager.IsAdapterInstalled("GoogleAdManager"))
-            {
-                if (googleAdManagerAppMetaData != null) googleAdManagerAppMetaData.Remove();
-                return;
-            }
-
-            // Check if the Google Ad Manager meta data already exists. Update if it already exists.
-            if (googleAdManagerAppMetaData != null)
-            {
-                elementApplication.SetAttributeValue(AndroidNamespace + "value", true);
-            }
-            // Meta data doesn't exist, add it.
-            else
-            {
-                elementApplication.Add(CreateMetaDataElement(KeyMetaDataGoogleAdManagerApp, true));
             }
         }
 

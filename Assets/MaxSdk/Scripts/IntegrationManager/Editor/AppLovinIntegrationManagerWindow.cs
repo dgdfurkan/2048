@@ -34,6 +34,8 @@ namespace AppLovinMax.Scripts.IntegrationManager.Editor
         private const string qualityServiceRequiresGradleBuildErrorMsg = "AppLovin Quality Service integration via AppLovin Integration Manager requires Custom Gradle Template enabled or Unity 2018.2 or higher.\n" +
                                                                          "If you would like to continue using your existing setup, please add Quality Service Plugin to your build.gradle manually.";
 
+        private readonly string[] consentFlowTypes = new string[2] {"Legacy (iOS Only)", "Unified"};
+
         private Vector2 scrollPosition;
         private static readonly Vector2 windowMinSize = new Vector2(750, 750);
         private const float actionFieldWidth = 60f;
@@ -43,6 +45,7 @@ namespace AppLovinMax.Scripts.IntegrationManager.Editor
         private const float privacySettingLabelWidth = 200f;
         private const float networkFieldWidthPercentage = 0.22f;
         private const float versionFieldWidthPercentage = 0.36f; // There are two version fields. Each take 40% of the width, network field takes the remaining 20%.
+        private static float partnerUrlsFieldWidth = 600f;
         private static float previousWindowWidth = windowMinSize.x;
         private static GUILayoutOption networkWidthOption = GUILayout.Width(networkFieldMinWidth);
         private static GUILayoutOption versionWidthOption = GUILayout.Width(versionFieldMinWidth);
@@ -65,7 +68,6 @@ namespace AppLovinMax.Scripts.IntegrationManager.Editor
         private PluginData pluginData;
         private bool pluginDataLoadFailed;
         private bool isPluginMoved;
-        private bool shouldMarkNewLocalizations;
         private bool shouldShowGoogleWarning;
         private bool networkButtonsEnabled = true;
 
@@ -142,8 +144,6 @@ namespace AppLovinMax.Scripts.IntegrationManager.Editor
 
         private void OnEnable()
         {
-            shouldMarkNewLocalizations = !EditorPrefs.GetBool(keyNewLocalizationsMarked, false);
-
             AppLovinIntegrationManager.downloadPluginProgressCallback = OnDownloadPluginProgress;
 
             // Plugin downloaded and imported. Update current versions for the imported package.
@@ -154,12 +154,6 @@ namespace AppLovinMax.Scripts.IntegrationManager.Editor
 
         private void OnDisable()
         {
-            // New localizations have been shown to the publisher, now remove them.
-            if (shouldMarkNewLocalizations)
-            {
-                EditorPrefs.SetBool(keyNewLocalizationsMarked, true);
-            }
-
             if (loadDataCoroutine != null)
             {
                 loadDataCoroutine.Stop();
@@ -206,8 +200,12 @@ namespace AppLovinMax.Scripts.IntegrationManager.Editor
                 EditorGUILayout.LabelField("AppLovin Quality Service", titleLabelStyle);
                 DrawQualityServiceSettings();
 
-                EditorGUILayout.LabelField("Privacy Settings", titleLabelStyle);
-                DrawPrivacySettings();
+                if (AppLovinSettings.Instance.ShowInternalSettingsInIntegrationManager)
+                {
+                    // TODO: Add a warning that these are internal to AppLovin only
+                    EditorGUILayout.LabelField("Privacy Settings", titleLabelStyle);
+                    DrawPrivacySettings();
+                }
 
                 EditorGUILayout.LabelField("Other Settings", titleLabelStyle);
                 DrawOtherSettings();
@@ -227,6 +225,7 @@ namespace AppLovinMax.Scripts.IntegrationManager.Editor
             if (GUI.changed)
             {
                 AppLovinSettings.Instance.SaveAsync();
+                AppLovinInternalSettings.Instance.Save();
             }
         }
 
@@ -494,45 +493,43 @@ namespace AppLovinMax.Scripts.IntegrationManager.Editor
 
             if (isInstalled)
             {
-                // Custom integration for AdMob where the user can enter the Android and iOS App IDs.
-                if (network.Name.Equals("ADMOB_NETWORK"))
-                {
-                    // Custom integration requires Google AdMob adapter version newer than android_19.0.1.0_ios_7.57.0.0.
-                    if (MaxSdkUtils.CompareUnityMediationVersions(network.CurrentVersions.Unity, "android_19.0.1.0_ios_7.57.0.0") == VersionComparisonResult.Greater)
-                    {
-                        GUILayout.BeginHorizontal();
-                        GUILayout.Space(20);
-                        using (new EditorGUILayout.VerticalScope("box"))
-                        {
-                            string requiredVersion;
-                            string warningMessage;
-                            if (isPluginMoved)
-                            {
-                                requiredVersion = "android_19.6.0.1_ios_7.69.0.0";
-                                warningMessage = "Looks like the MAX plugin has been moved to a different directory. This requires Google adapter version newer than " + requiredVersion + " for auto-export of AdMob App ID to work correctly.";
-                            }
-                            else
-                            {
-                                requiredVersion = "android_19.2.0.0_ios_7.61.0.0";
-                                warningMessage = "The current version of AppLovin MAX plugin requires Google adapter version newer than " + requiredVersion + " to enable auto-export of AdMob App ID.";
-                            }
-
-                            GUILayout.Space(2);
-                            if (MaxSdkUtils.CompareUnityMediationVersions(network.CurrentVersions.Unity, requiredVersion) == VersionComparisonResult.Greater)
-                            {
-                                AppLovinSettings.Instance.AdMobAndroidAppId = DrawTextField("App ID (Android)", AppLovinSettings.Instance.AdMobAndroidAppId, networkWidthOption);
-                                AppLovinSettings.Instance.AdMobIosAppId = DrawTextField("App ID (iOS)", AppLovinSettings.Instance.AdMobIosAppId, networkWidthOption);
-                            }
-                            else
-                            {
-                                EditorGUILayout.HelpBox(warningMessage, MessageType.Warning);
-                            }
-                        }
-
-                        GUILayout.EndHorizontal();
-                    }
-                }
+                DrawGoogleAppIdTextBoxIfNeeded(network);
             }
+        }
+
+        private void DrawGoogleAppIdTextBoxIfNeeded(Network network)
+        {
+            // Custom integration for AdMob where the user can enter the Android and iOS App IDs.
+            if (network.Name.Equals("ADMOB_NETWORK"))
+            {
+                // Show only one set of text boxes if both ADMOB and GAM are installed
+                if (AppLovinIntegrationManager.IsAdapterInstalled("GoogleAdManager")) return;
+
+                DrawGoogleAppIdTextBox();
+            }
+
+            // Custom integration for GAM where the user can enter the Android and iOS App IDs.
+            else if (network.Name.Equals("GOOGLE_AD_MANAGER_NETWORK"))
+            {
+                DrawGoogleAppIdTextBox();
+            }
+        }
+
+        /// <summary>
+        /// Draws the text box for GAM or ADMOB to input the App ID
+        /// </summary>
+        private void DrawGoogleAppIdTextBox()
+        {
+            GUILayout.BeginHorizontal();
+            GUILayout.Space(20);
+            using (new EditorGUILayout.VerticalScope("box"))
+            {
+                GUILayout.Space(2);
+                AppLovinSettings.Instance.AdMobAndroidAppId = DrawTextField("App ID (Android)", AppLovinSettings.Instance.AdMobAndroidAppId, networkWidthOption);
+                AppLovinSettings.Instance.AdMobIosAppId = DrawTextField("App ID (iOS)", AppLovinSettings.Instance.AdMobIosAppId, networkWidthOption);
+            }
+
+            GUILayout.EndHorizontal();
         }
 
         /// <summary>
@@ -596,13 +593,27 @@ namespace AppLovinMax.Scripts.IntegrationManager.Editor
             GUILayout.EndHorizontal();
         }
 
-        private string DrawTextField(string fieldTitle, string text, GUILayoutOption labelWidth, GUILayoutOption textFieldWidthOption = null)
+        private string DrawTextField(string fieldTitle, string text, GUILayoutOption labelWidth, GUILayoutOption textFieldWidthOption = null, bool isTextFieldEditable = true)
         {
             GUILayout.BeginHorizontal();
             GUILayout.Space(4);
             EditorGUILayout.LabelField(new GUIContent(fieldTitle), labelWidth);
             GUILayout.Space(4);
-            text = (textFieldWidthOption == null) ? GUILayout.TextField(text) : GUILayout.TextField(text, textFieldWidthOption);
+            if (isTextFieldEditable)
+            {
+                text = (textFieldWidthOption == null) ? GUILayout.TextField(text) : GUILayout.TextField(text, textFieldWidthOption);
+            }
+            else
+            {
+                if (textFieldWidthOption == null)
+                {
+                    GUILayout.Label(text);
+                }
+                else
+                {
+                    GUILayout.Label(text, textFieldWidthOption);
+                }
+            }
             GUILayout.Space(4);
             GUILayout.EndHorizontal();
             GUILayout.Space(4);
@@ -616,74 +627,108 @@ namespace AppLovinMax.Scripts.IntegrationManager.Editor
             GUILayout.Space(10);
             using (new EditorGUILayout.VerticalScope("box"))
             {
-                GUILayout.Space(4);
-                EditorGUILayout.HelpBox("Consent Flow has been deprecated and will be removed in a future release.", MessageType.Warning);
-                GUILayout.Space(4);
                 GUILayout.BeginHorizontal();
                 GUILayout.Space(4);
-                AppLovinSettings.Instance.ConsentFlowEnabled = GUILayout.Toggle(AppLovinSettings.Instance.ConsentFlowEnabled, "  Enable Consent Flow (iOS Only)");
+                AppLovinInternalSettings.Instance.ConsentFlowEnabled = GUILayout.Toggle(AppLovinInternalSettings.Instance.ConsentFlowEnabled, "  Enable Consent Flow");
                 GUILayout.EndHorizontal();
                 GUILayout.Space(4);
-
-                GUI.enabled = AppLovinSettings.Instance.ConsentFlowEnabled;
-
-                AppLovinSettings.Instance.ConsentFlowPrivacyPolicyUrl = DrawTextField("Privacy Policy URL", AppLovinSettings.Instance.ConsentFlowPrivacyPolicyUrl, GUILayout.Width(privacySettingLabelWidth), privacySettingFieldWidthOption);
-                AppLovinSettings.Instance.ConsentFlowTermsOfServiceUrl = DrawTextField("Terms of Service URL (optional)", AppLovinSettings.Instance.ConsentFlowTermsOfServiceUrl, GUILayout.Width(privacySettingLabelWidth), privacySettingFieldWidthOption);
-                AppLovinSettings.Instance.UserTrackingUsageDescriptionEn = DrawTextField("User Tracking Usage Description", AppLovinSettings.Instance.UserTrackingUsageDescriptionEn, GUILayout.Width(privacySettingLabelWidth), privacySettingFieldWidthOption);
-
-                GUILayout.BeginHorizontal();
-                GUILayout.Space(4);
-                AppLovinSettings.Instance.UserTrackingUsageLocalizationEnabled = GUILayout.Toggle(AppLovinSettings.Instance.UserTrackingUsageLocalizationEnabled, "  Localize User Tracking Usage Description");
-                GUILayout.EndHorizontal();
-                GUILayout.Space(4);
-
-                if (AppLovinSettings.Instance.UserTrackingUsageLocalizationEnabled)
-                {
-                    AppLovinSettings.Instance.UserTrackingUsageDescriptionZhHans = DrawTextField("Chinese, Simplified (zh-Hans)", AppLovinSettings.Instance.UserTrackingUsageDescriptionZhHans, GUILayout.Width(privacySettingLabelWidth), privacySettingFieldWidthOption);
-                    AppLovinSettings.Instance.UserTrackingUsageDescriptionZhHant = DrawTextField("Chinese, Traditional (zh-Hant)" + (shouldMarkNewLocalizations ? " *" : ""), AppLovinSettings.Instance.UserTrackingUsageDescriptionZhHant, GUILayout.Width(privacySettingLabelWidth), privacySettingFieldWidthOption); // TODO: Remove new mark for next release.
-                    AppLovinSettings.Instance.UserTrackingUsageDescriptionFr = DrawTextField("French (fr)", AppLovinSettings.Instance.UserTrackingUsageDescriptionFr, GUILayout.Width(privacySettingLabelWidth), privacySettingFieldWidthOption);
-                    AppLovinSettings.Instance.UserTrackingUsageDescriptionDe = DrawTextField("German (de)", AppLovinSettings.Instance.UserTrackingUsageDescriptionDe, GUILayout.Width(privacySettingLabelWidth), privacySettingFieldWidthOption);
-                    AppLovinSettings.Instance.UserTrackingUsageDescriptionJa = DrawTextField("Japanese (ja)", AppLovinSettings.Instance.UserTrackingUsageDescriptionJa, GUILayout.Width(privacySettingLabelWidth), privacySettingFieldWidthOption);
-                    AppLovinSettings.Instance.UserTrackingUsageDescriptionKo = DrawTextField("Korean (ko)", AppLovinSettings.Instance.UserTrackingUsageDescriptionKo, GUILayout.Width(privacySettingLabelWidth), privacySettingFieldWidthOption);
-                    AppLovinSettings.Instance.UserTrackingUsageDescriptionEs = DrawTextField("Spanish (es)", AppLovinSettings.Instance.UserTrackingUsageDescriptionEs, GUILayout.Width(privacySettingLabelWidth), privacySettingFieldWidthOption);
-
-                    GUILayout.Space(4);
-                    GUILayout.BeginHorizontal();
-                    GUILayout.Space(4);
-                    EditorGUILayout.HelpBox((shouldMarkNewLocalizations ? "* " : "") + "MAX may add more localized strings to this list in the future, which will set the default value of the User Tracking Usage Description string for more locales. If you are overriding these with your own custom translations, you may want to review this list whenever you upgrade the plugin to see if there are new entries you may want to customize.", MessageType.Info);
-                    GUILayout.Space(4);
-                    GUILayout.EndHorizontal();
-
-                    GUILayout.Space(4);
-                    GUILayout.BeginHorizontal();
-                    GUILayout.Space(4);
-                    EditorGUILayout.HelpBox("If you have your own implementation of InfoPlist.strings localization implementation, please use that instead. Using both at the same time may cause conflicts.", MessageType.Info);
-                    GUILayout.Space(4);
-                    GUILayout.EndHorizontal();
-                }
-
                 GUI.enabled = true;
 
-                GUILayout.Space(4);
-                GUILayout.BeginHorizontal();
-                GUILayout.Space(4);
-                GUILayout.Button("Click the link below for more information about User Tracking Usage Description: ", wrapTextLabelStyle);
-                GUILayout.Space(4);
-                GUILayout.EndHorizontal();
-                GUILayout.BeginHorizontal();
-                GUILayout.Space(4);
-                if (GUILayout.Button(new GUIContent(userTrackingUsageDescriptionDocsLink), linkLabelStyle))
+                if (AppLovinInternalSettings.Instance.ConsentFlowEnabled)
                 {
-                    Application.OpenURL(userTrackingUsageDescriptionDocsLink);
+                    DrawConsentFlowSettings();
                 }
-
-                GUILayout.Space(4);
-                GUILayout.EndHorizontal();
-                GUILayout.Space(4);
             }
 
             GUILayout.Space(5);
             GUILayout.EndHorizontal();
+        }
+
+        private void DrawConsentFlowSettings()
+        {
+            AppLovinInternalSettings.Instance.ConsentFlowPrivacyPolicyUrl = DrawTextField("Privacy Policy URL", AppLovinInternalSettings.Instance.ConsentFlowPrivacyPolicyUrl, GUILayout.Width(privacySettingLabelWidth), privacySettingFieldWidthOption);
+            AppLovinInternalSettings.Instance.ConsentFlowTermsOfServiceUrl = DrawTextField("Terms of Service URL (optional)", AppLovinInternalSettings.Instance.ConsentFlowTermsOfServiceUrl, GUILayout.Width(privacySettingLabelWidth), privacySettingFieldWidthOption);
+
+            GUILayout.Space(4);
+            GUILayout.BeginHorizontal();
+            GUILayout.Space(4);
+            AppLovinInternalSettings.Instance.ConsentFlowIncludeDefaultAdvertisingPartnerUrls = GUILayout.Toggle(AppLovinInternalSettings.Instance.ConsentFlowIncludeDefaultAdvertisingPartnerUrls, "  Include Default Advertising Partner URLs");
+            GUILayout.EndHorizontal();
+
+            GUILayout.Space(4);
+            GUILayout.BeginHorizontal();
+            GUILayout.Space(4);
+            AppLovinInternalSettings.Instance.ConsentFlowAdvertisingPartnerUrls = DrawTextField("Advertising Partner URLs (CSV)", AppLovinInternalSettings.Instance.ConsentFlowAdvertisingPartnerUrls, GUILayout.Width(privacySettingLabelWidth), privacySettingFieldWidthOption);
+            GUILayout.EndHorizontal();
+
+            GUILayout.Space(4);
+            GUILayout.BeginHorizontal();
+            GUILayout.Space(4);
+            AppLovinInternalSettings.Instance.ConsentFlowIncludeDefaultAnalyticsPartnerUrls = GUILayout.Toggle(AppLovinInternalSettings.Instance.ConsentFlowIncludeDefaultAnalyticsPartnerUrls, "  Include Default Analytics Partner URLs");
+            GUILayout.EndHorizontal();
+
+            GUILayout.Space(4);
+            GUILayout.BeginHorizontal();
+            GUILayout.Space(4);
+            AppLovinInternalSettings.Instance.ConsentFlowAnalyticsPartnerUrls = DrawTextField("Analytics Partner URLs (CSV)", AppLovinInternalSettings.Instance.ConsentFlowAnalyticsPartnerUrls, GUILayout.Width(privacySettingLabelWidth), privacySettingFieldWidthOption);
+            GUILayout.EndHorizontal();
+            GUILayout.Space(4);
+            GUILayout.BeginHorizontal();
+            GUILayout.Space(4);
+            EditorGUILayout.LabelField("iOS specific settings:", headerLabelStyle);
+            GUILayout.EndHorizontal();
+
+            var isEditableTextField = AppLovinInternalSettings.Instance.OverrideDefaultUserTrackingUsageDescriptions;
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Space(4);
+            AppLovinInternalSettings.Instance.OverrideDefaultUserTrackingUsageDescriptions = GUILayout.Toggle(AppLovinInternalSettings.Instance.OverrideDefaultUserTrackingUsageDescriptions, "  Override Default User Tracking Usage Description");
+            GUILayout.EndHorizontal();
+            GUILayout.Space(4);
+            
+            GUILayout.Space(4);
+            AppLovinInternalSettings.Instance.UserTrackingUsageDescriptionEn = DrawTextField("User Tracking Usage Description", AppLovinInternalSettings.Instance.UserTrackingUsageDescriptionEn, GUILayout.Width(privacySettingLabelWidth), privacySettingFieldWidthOption, isEditableTextField);
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Space(4);
+            AppLovinInternalSettings.Instance.UserTrackingUsageLocalizationEnabled = GUILayout.Toggle(AppLovinInternalSettings.Instance.UserTrackingUsageLocalizationEnabled, "  Localize User Tracking Usage Description");
+            GUILayout.EndHorizontal();
+            GUILayout.Space(4);
+
+            if (AppLovinInternalSettings.Instance.UserTrackingUsageLocalizationEnabled)
+            {
+                AppLovinInternalSettings.Instance.UserTrackingUsageDescriptionZhHans = DrawTextField("Chinese, Simplified (zh-Hans)", AppLovinInternalSettings.Instance.UserTrackingUsageDescriptionZhHans, GUILayout.Width(privacySettingLabelWidth), privacySettingFieldWidthOption, isEditableTextField);
+                AppLovinInternalSettings.Instance.UserTrackingUsageDescriptionZhHant = DrawTextField("Chinese, Traditional (zh-Hant)", AppLovinInternalSettings.Instance.UserTrackingUsageDescriptionZhHant, GUILayout.Width(privacySettingLabelWidth), privacySettingFieldWidthOption, isEditableTextField);
+                AppLovinInternalSettings.Instance.UserTrackingUsageDescriptionFr = DrawTextField("French (fr)", AppLovinInternalSettings.Instance.UserTrackingUsageDescriptionFr, GUILayout.Width(privacySettingLabelWidth), privacySettingFieldWidthOption, isEditableTextField);
+                AppLovinInternalSettings.Instance.UserTrackingUsageDescriptionDe = DrawTextField("German (de)", AppLovinInternalSettings.Instance.UserTrackingUsageDescriptionDe, GUILayout.Width(privacySettingLabelWidth), privacySettingFieldWidthOption, isEditableTextField);
+                AppLovinInternalSettings.Instance.UserTrackingUsageDescriptionJa = DrawTextField("Japanese (ja)", AppLovinInternalSettings.Instance.UserTrackingUsageDescriptionJa, GUILayout.Width(privacySettingLabelWidth), privacySettingFieldWidthOption, isEditableTextField);
+                AppLovinInternalSettings.Instance.UserTrackingUsageDescriptionKo = DrawTextField("Korean (ko)", AppLovinInternalSettings.Instance.UserTrackingUsageDescriptionKo, GUILayout.Width(privacySettingLabelWidth), privacySettingFieldWidthOption, isEditableTextField);
+                AppLovinInternalSettings.Instance.UserTrackingUsageDescriptionEs = DrawTextField("Spanish (es)", AppLovinInternalSettings.Instance.UserTrackingUsageDescriptionEs, GUILayout.Width(privacySettingLabelWidth), privacySettingFieldWidthOption, isEditableTextField);
+
+                GUILayout.Space(4);
+                GUILayout.BeginHorizontal();
+                GUILayout.Space(4);
+                EditorGUILayout.HelpBox("If you have your own implementation of InfoPlist.strings localization implementation, please use that instead. Using both at the same time may cause conflicts.", MessageType.Info);
+                GUILayout.Space(4);
+                GUILayout.EndHorizontal();
+            }
+
+            GUILayout.Space(4);
+            GUILayout.BeginHorizontal();
+            GUILayout.Space(4);
+            GUILayout.Button("Click the link below for more information about User Tracking Usage Description: ", wrapTextLabelStyle);
+            GUILayout.Space(4);
+            GUILayout.EndHorizontal();
+            GUILayout.BeginHorizontal();
+            GUILayout.Space(4);
+            if (GUILayout.Button(new GUIContent(userTrackingUsageDescriptionDocsLink), linkLabelStyle))
+            {
+                Application.OpenURL(userTrackingUsageDescriptionDocsLink);
+            }
+
+            GUILayout.Space(4);
+            GUILayout.EndHorizontal();
+            GUILayout.Space(4);
         }
 
         private void DrawOtherSettings()
@@ -775,6 +820,8 @@ namespace AppLovinMax.Scripts.IntegrationManager.Editor
 
             var availableUserDescriptionTextFieldWidth = currentWidth - privacySettingLabelWidth - textFieldOtherUiElementsWidth;
             privacySettingFieldWidthOption = GUILayout.Width(availableUserDescriptionTextFieldWidth);
+
+            partnerUrlsFieldWidth = currentWidth - 60; // NOTE: Magic number alert. This is the sum of all the empty spacing around the field.
         }
 
         #endregion
@@ -875,7 +922,7 @@ namespace AppLovinMax.Scripts.IntegrationManager.Editor
                     yield return AppLovinIntegrationManager.Instance.DownloadPlugin(network, false);
                 }
             }
-            
+
             EditorApplication.UnlockReloadAssemblies();
             networkButtonsEnabled = true;
 

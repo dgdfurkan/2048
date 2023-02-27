@@ -6,7 +6,7 @@ namespace GunduzDev
 {
     public class AdsController : MonoBehaviour
     {
-        public void WatchAnyway()
+        public void ShowRewarded01()
         {
             AdsManager.Instance.ShowRewarded(() => { WatchRewardedAd01(); });
         }
@@ -17,6 +17,21 @@ namespace GunduzDev
             GameManager.Instance.IncreaseScore(5000);
 
             //UIManager.Instance.FadeSlowly(UIManager.Instance.rewardedAnywayButton.gameObject);
+        }
+
+        public void ShowInterstitial01()
+        {
+            AdsManager.Instance.ShowInterstitial(() => { WatchRewardedAd01(); });
+        }
+        
+        public void ShowBanners()
+        {
+            AdsManager.Instance.ShowBannerTopLeft();
+            AdsManager.Instance.ShowBannerTopRight();
+            AdsManager.Instance.ShowBannerTopCenter();
+            AdsManager.Instance.ShowBannerBottomLeft();
+            AdsManager.Instance.ShowBannerBottomRight();
+            AdsManager.Instance.ShowBannerBottomCenter();
         }
     }
 }

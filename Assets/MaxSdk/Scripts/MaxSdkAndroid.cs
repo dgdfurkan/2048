@@ -18,11 +18,6 @@ public class MaxSdkAndroid : MaxSdkBase
         get { return MaxVariableServiceAndroid.Instance; }
     }
 
-    public static MaxUserServiceAndroid UserService
-    {
-        get { return MaxUserServiceAndroid.Instance; }
-    }
-
     static MaxSdkAndroid()
     {
         InitCallbacks();
@@ -274,7 +269,7 @@ public class MaxSdkAndroid : MaxSdkBase
         ValidateAdUnitIdentifier(adUnitIdentifier, "create banner");
         MaxUnityPluginClass.CallStatic("createBanner", adUnitIdentifier, x, y);
     }
-    
+
     /// <summary>
     /// Load a new banner ad.
     /// NOTE: The <see cref="CreateBanner()"/> method loads the first banner ad and initiates an automated banner refresh process.
@@ -493,7 +488,7 @@ public class MaxSdkAndroid : MaxSdkBase
         ValidateAdUnitIdentifier(adUnitIdentifier, "load MREC");
         MaxUnityPluginClass.CallStatic("loadMRec", adUnitIdentifier);
     }
-    
+
     /// <summary>
     /// Set the MREC placement for an ad unit identifier to tie the future ad events to.
     /// </summary>

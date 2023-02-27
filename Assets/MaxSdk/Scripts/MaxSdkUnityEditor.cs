@@ -37,11 +37,6 @@ public class MaxSdkUnityEditor : MaxSdkBase
         get { return MaxVariableServiceUnityEditor.Instance; }
     }
 
-    public static MaxUserServiceUnityEditor UserService
-    {
-        get { return MaxUserServiceUnityEditor.Instance; }
-    }
-
     [RuntimeInitializeOnLoadMethod]
     public static void InitializeMaxSdkUnityEditorOnLoad()
     {
@@ -359,7 +354,7 @@ public class MaxSdkUnityEditor : MaxSdkBase
         StubBanners.Add(adUnitIdentifier, stubBanner);
 #endif
     }
-    
+
     /// <summary>
     /// Load a new banner ad.
     /// NOTE: The <see cref="CreateBanner()"/> method loads the first banner ad and initiates an automated banner refresh process.
@@ -584,7 +579,7 @@ public class MaxSdkUnityEditor : MaxSdkBase
         ValidateAdUnitIdentifier(adUnitIdentifier, "create MREC");
         RequestAdUnit(adUnitIdentifier);
     }
-    
+
     /// <summary>
     /// Load a new MREC ad.
     /// NOTE: The <see cref="CreateMRec()"/> method loads the first MREC ad and initiates an automated MREC refresh process.

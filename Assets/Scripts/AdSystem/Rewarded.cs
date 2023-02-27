@@ -1,20 +1,19 @@
-using System.Collections;
-using System.Collections.Generic;
+using System;
 using UnityEngine;
 
 namespace GunduzDev
 {
     public class Rewarded : MonoBehaviour
     {
-        // Start is called before the first frame update
+        public string adUnitId = "7e810495640af53f";
+        public Action rewardCallback;
+        int retryAttempt;
+
         void Start()
         {
             InitializeRewardedAds();
         }
 
-        public string adUnitId = "7e810495640af53f";
-        public System.Action rewardCallback;
-        int retryAttempt;
         public void InitializeRewardedAds()
         {
             // Attach callback
@@ -34,6 +33,7 @@ namespace GunduzDev
         private void LoadRewardedAd()
         {
             MaxSdk.LoadRewardedAd(adUnitId);
+            UIManager.Instance.UpdateStatementText("LoadRewardedAd");
         }
 
         private void OnRewardedAdLoadedEvent(string adUnitId, MaxSdkBase.AdInfo adInfo)
@@ -50,7 +50,7 @@ namespace GunduzDev
             // AppLovin recommends that you retry with exponentially higher delays, up to a maximum delay (in this case 64 seconds).
 
             retryAttempt++;
-            double retryDelay = System.Math.Pow(2, System.Math.Min(6, retryAttempt));
+            double retryDelay = Math.Pow(2, Math.Min(6, retryAttempt));
 
             Invoke("LoadRewardedAd", (float)retryDelay);
         }
@@ -90,6 +90,7 @@ namespace GunduzDev
         {
             if (MaxSdk.IsRewardedAdReady(adUnitId))
             {
+                UIManager.Instance.UpdateStatementText("IsRewardedAdReady");
                 MaxSdk.ShowRewardedAd(adUnitId);
             }
         }

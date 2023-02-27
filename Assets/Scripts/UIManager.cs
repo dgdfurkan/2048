@@ -2,12 +2,14 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
+using TMPro;
 
 namespace GunduzDev
 {
     public class UIManager : MonoSingleton<UIManager>
     {
-        public Button rewardedAnywayButton;
+        public Button RewardedAnywayButton;
+        public TextMeshProUGUI StatementText;
         
         public void FadeSlowly(GameObject gameObject)
         {
@@ -23,6 +25,11 @@ namespace GunduzDev
             yield return new WaitForSecondsRealtime(2f);
 
             gameObject.SetActive(true);
+        }
+
+        public void UpdateStatementText(string message)
+        {
+            StatementText.text = StatementText.text + " , " + message;
         }
     }
 }
