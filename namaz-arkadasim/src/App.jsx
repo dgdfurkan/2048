@@ -29,15 +29,13 @@ const AppContent = () => {
   useEffect(() => {
     if (user && user.username) {
        // Kullanıcı giriş yaptıysa OneSignal ID'sini alıp kaydedebiliriz
-       // Ancak bunu GAS tarafında register anında yapmak daha mantıklı.
-       // Veya burada ID'yi alıp update edebiliriz.
-       OneSignal.getUserId().then(id => {
-          if (id) {
-             console.log("OneSignal ID:", id);
-             // Bu ID'yi bir sonraki API isteğinde gönderebiliriz veya
-             // Register olurken OneSignal.getUserId() yapıp gönderiyoruz zaten.
-          }
-       });
+       try {
+           if (OneSignal.User && OneSignal.User.PushSubscription && OneSignal.User.PushSubscription.id) {
+               console.log("OneSignal ID:", OneSignal.User.PushSubscription.id);
+           }
+       } catch (e) {
+           console.log("OneSignal ID fetch error", e);
+       }
     }
   }, [user]);
 

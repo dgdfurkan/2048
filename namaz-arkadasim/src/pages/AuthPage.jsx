@@ -47,7 +47,9 @@ const AuthPage = () => {
         // OneSignal ID al
         let osId = '';
         try {
-            osId = await OneSignal.getUserId();
+            if (OneSignal.User && OneSignal.User.PushSubscription) {
+                osId = OneSignal.User.PushSubscription.id || '';
+            }
         } catch (e) {
             console.log("OneSignal ID alınamadı", e);
         }

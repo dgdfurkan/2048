@@ -85,7 +85,10 @@ Tarayıcı kapalıyken bile bildirim gelmesi için OneSignal kullanacağız.
 ## 4. Adım: Web Sitesini Yayınlama (Netlify)
 
 1.  Bilgisayarınızdaki `namaz-arkadasim` klasöründe terminali açın (veya VS Code terminali).
-2.  `npm run build` komutunu çalıştırın.
+2.  Önce gerekli paketleri yüklemek için şu komutu çalıştırın:
+    *   `npm install`
+3.  Ardından siteyi oluşturmak için şu komutu çalıştırın:
+    *   `npm run build`
     *   Bu işlem `dist` adında bir klasör oluşturacak.
 3.  [netlify.com](https://netlify.com) adresine gidin ve giriş yapın.
 4.  **Add new site** -> **Deploy manually** seçeneğini seçin.
