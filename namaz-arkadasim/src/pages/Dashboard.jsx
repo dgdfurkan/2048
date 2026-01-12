@@ -2,10 +2,11 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import api from '../services/api';
-import { LogOut, RefreshCw, Send, CheckCircle, Circle, MapPin, Moon, Sun, MessageCircle, Heart, Palette, Loader2, ArrowRight } from 'lucide-react';
+import { LogOut, Send, Check, MapPin, MessageCircle, Heart, Palette, Loader2, Home, Settings, Lock, User } from 'lucide-react';
 import axios from 'axios';
-import { format, isAfter, isBefore, parse } from 'date-fns';
+import { format } from 'date-fns';
 import { tr } from 'date-fns/locale';
+import { motion, AnimatePresence } from 'framer-motion';
 
 const PRAYER_NAMES = {
   Fajr: "Sabah",
@@ -15,15 +16,20 @@ const PRAYER_NAMES = {
   Isha: "Yatsı"
 };
 
+const PRAYER_ORDER = ['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'];
+
 const Dashboard = () => {
   const { user, logout } = useAuth();
   const { theme, changeTheme, themes } = useTheme();
+
+  // View State (Tabs)
+  const [activeTab, setActiveTab] = useState('home'); // 'home', 'chat', 'settings'
 
   // Data States
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [prayerTimes, setPrayerTimes] = useState(null);
-  const [partnerPrayerTimes, setPartnerPrayerTimes] = useState(null); // Eşin namaz saatleri
+  const [partnerPrayerTimes, setPartnerPrayerTimes] = useState(null);
   const [roomData, setRoomData] = useState(null);
   const [city, setCity] = useState(localStorage.getItem('namaz_city') || 'Istanbul');
   const [nextPrayer, setNextPrayer] = useState(null);
@@ -32,7 +38,8 @@ const Dashboard = () => {
   const [message, setMessage] = useState('');
   const chatEndRef = useRef(null);
   const [messagesLength, setMessagesLength] = useState(0);
-  const [isThemeOpen, setIsThemeOpen] = useState(false);
+
+  // Content Modal
   const [showContent, setShowContent] = useState(false);
   const [contentData, setContentData] = useState(null);
 
@@ -40,19 +47,31 @@ const Dashboard = () => {
     fetchData();
     fetchPrayerTimes();
 
+    // Check for date change (Midnight reset logic)
+    const checkDate = setInterval(() => {
+         const lastDate = localStorage.getItem('last_active_date');
+         const today = new Date().toLocaleDateString();
+         if (lastDate && lastDate !== today) {
+             window.location.reload(); // Hard refresh to clear optimistic states and fetch fresh
+         }
+         localStorage.setItem('last_active_date', today);
+    }, 60000);
+
     const interval = setInterval(fetchData, 10000);
-    return () => clearInterval(interval);
+    return () => {
+        clearInterval(interval);
+        clearInterval(checkDate);
+    };
   }, []);
 
-  // Update city in backend on change (debounce could be good but simplicity first)
+  // Update city in backend
   useEffect(() => {
       if (city && user.username) {
-        // Fire and forget update
         api.request('update_city', { username: user.username, city: city }).catch(console.error);
       }
   }, [city]);
 
-  // Fetch Partner's Prayer Times if their city is different
+  // Fetch Partner's Prayer Times
   useEffect(() => {
     if (roomData?.memberCities) {
         const partnerName = roomData?.members?.find(m => m !== user.username);
@@ -76,11 +95,11 @@ const Dashboard = () => {
   };
 
   useEffect(() => {
-    if (roomData?.messages?.length > messagesLength) {
-        chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (activeTab === 'chat' && roomData?.messages?.length > messagesLength) {
+        setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
         setMessagesLength(roomData.messages.length);
     }
-  }, [roomData?.messages]);
+  }, [roomData?.messages, activeTab]);
 
   const fetchPrayerTimes = async () => {
     try {
@@ -95,15 +114,8 @@ const Dashboard = () => {
   };
 
   const calculateNextPrayer = (timings) => {
-      // Simple logic to find next prayer
       const now = new Date();
       const timeStr = format(now, "HH:mm");
-
-      // Convert timings to comparable format
-      // Order: Fajr, Sunrise, Dhuhr, Asr, Maghrib, Isha
-      // Diyanet takvimi: Sabah namazı İmsak ile başlar, Güneş ile biter (kerahat).
-      // Ancak "vakit" olarak bir sonraki ezanı göstereceğiz.
-
       const prayers = [
           { key: 'Fajr', time: timings.Fajr },
           { key: 'Sunrise', time: timings.Sunrise },
@@ -119,7 +131,6 @@ const Dashboard = () => {
               return;
           }
       }
-      // If all passed, next is Fajr tomorrow
       setNextPrayer({ key: 'Fajr', time: timings.Fajr, tomorrow: true });
   };
 
@@ -137,34 +148,17 @@ const Dashboard = () => {
     }
   };
 
-  const handleJoinRoom = async (roomId) => {
-    if (!roomId) return;
-    setLoading(true);
-    try {
-      const res = await api.request('join_room', { username: user.username, room_id: roomId });
-      if (res.status === 'success') {
-        const newUser = { ...user, room_id: roomId };
-        localStorage.setItem('namaz_user', JSON.stringify(newUser));
-        window.location.reload();
-      }
-    } catch (e) {
-      alert("Hata oluştu");
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const handlePrayerCheck = async (prayerKey, isChecked) => {
     const prayerName = PRAYER_NAMES[prayerKey];
 
-    // 1. OPTIMISTIC UPDATE
+    // OPTIMISTIC UPDATE
     const prevRoomData = { ...roomData };
     if (!prevRoomData.logs) prevRoomData.logs = {};
     if (!prevRoomData.logs[user.username]) prevRoomData.logs[user.username] = {};
     prevRoomData.logs[user.username][prayerName] = isChecked;
     setRoomData(prevRoomData);
 
-    // 2. BACKGROUND SYNC
+    // SYNC
     setSyncing(true);
     try {
         await api.request('log_prayer', {
@@ -195,7 +189,6 @@ const Dashboard = () => {
   const handleSendMessage = async (e) => {
     e.preventDefault();
     if (!message.trim()) return;
-
     const msgText = message;
     setMessage('');
 
@@ -226,255 +219,322 @@ const Dashboard = () => {
     }
   };
 
+  const isPrayerTimePassed = (prayerKey) => {
+      if (!prayerTimes) return false;
+      const now = new Date();
+      const timeStr = format(now, "HH:mm");
+      // Basic check: is Current Time >= Prayer Time?
+      // For simplicity, we compare strings "HH:mm"
+      return timeStr >= prayerTimes[prayerKey];
+  };
+
+  // --- SUB-COMPONENTS ---
+
+  const PrayerCard = ({ pKey, myLogs, partnerLogs }) => {
+      const isMyChecked = !!myLogs[PRAYER_NAMES[pKey]];
+      const isPartnerChecked = !!partnerLogs[PRAYER_NAMES[pKey]];
+      const isTimePassed = isPrayerTimePassed(pKey);
+
+      let displayTime = prayerTimes ? prayerTimes[pKey] : '--:--';
+      if (pKey === 'Fajr' && prayerTimes) displayTime = `${prayerTimes.Fajr}-${prayerTimes.Sunrise}`;
+
+      return (
+        <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className={`bg-white rounded-2xl p-4 shadow-sm border border-gray-100 flex items-center justify-between mb-3 ${isMyChecked ? 'bg-green-50/50' : ''}`}
+        >
+            <div className="flex flex-col">
+                <span className={`text-sm font-bold ${theme.text} uppercase tracking-wide opacity-80`}>{PRAYER_NAMES[pKey]}</span>
+                <span className="text-xs text-gray-500 font-medium mt-0.5">{displayTime}</span>
+            </div>
+
+            <div className="flex items-center gap-4">
+                {/* Partner Status (Small) */}
+                <div className="flex flex-col items-center">
+                    <span className="text-[9px] text-gray-400 mb-1">Eşin</span>
+                    <div className={`w-8 h-8 rounded-full flex items-center justify-center border transition-all ${isPartnerChecked ? 'bg-green-100 border-green-200' : 'bg-gray-50 border-gray-100'}`}>
+                        {isPartnerChecked ? <Check size={14} className="text-green-600" /> : <div className="w-2 h-2 rounded-full bg-gray-300" />}
+                    </div>
+                </div>
+
+                {/* My Checkbox (Big) */}
+                <button
+                    onClick={() => handlePrayerCheck(pKey, true)}
+                    disabled={isMyChecked || !isTimePassed}
+                    className={`w-12 h-12 rounded-xl flex items-center justify-center transition-all relative overflow-hidden
+                        ${!isTimePassed ? 'bg-gray-100 cursor-not-allowed opacity-50' : ''}
+                        ${isTimePassed && !isMyChecked ? `${theme.primary} text-white shadow-lg active:scale-90` : ''}
+                        ${isMyChecked ? 'bg-green-500 text-white cursor-default' : ''}
+                    `}
+                >
+                    {!isTimePassed && <Lock size={16} className="text-gray-400" />}
+
+                    {isTimePassed && !isMyChecked && <div className="w-4 h-4 rounded-full border-2 border-white/50" />}
+
+                    {isMyChecked && (
+                        <motion.div
+                            initial={{ scale: 0 }}
+                            animate={{ scale: 1.2 }}
+                            transition={{ type: "spring", stiffness: 200, damping: 10 }}
+                        >
+                            <Check size={28} strokeWidth={3} />
+                        </motion.div>
+                    )}
+                </button>
+            </div>
+        </motion.div>
+      );
+  };
+
+  // --- VIEWS ---
+
+  const HomeView = () => {
+      const myLogs = roomData?.logs?.[user.username] || {};
+      const partnerName = roomData?.members?.find(m => m !== user.username);
+      const partnerLogs = partnerName ? (roomData?.logs?.[partnerName] || {}) : {};
+
+      return (
+        <div className="pb-24 pt-4 px-4 space-y-6">
+            {/* Header / Next Prayer */}
+            <div className={`rounded-3xl p-6 text-white shadow-lg ${theme.primary} relative overflow-hidden`}>
+                <div className="absolute top-0 right-0 p-4 opacity-20">
+                    <Heart size={64} />
+                </div>
+                <div className="relative z-10">
+                    <p className="text-white/80 text-xs font-medium uppercase tracking-wider mb-1">Sıradaki Vakit</p>
+                    <h2 className="text-3xl font-bold mb-2">
+                        {nextPrayer ? (PRAYER_NAMES[nextPrayer.key] || nextPrayer.key) : '...'}
+                    </h2>
+                    <p className="text-white/90 text-lg font-medium">
+                        {nextPrayer ? nextPrayer.time : '--:--'}
+                    </p>
+                    <div className="mt-4 flex items-center gap-2 text-white/70 text-xs bg-white/10 w-fit px-3 py-1 rounded-full">
+                        <MapPin size={12} />
+                        <span>{city}</span>
+                    </div>
+                </div>
+            </div>
+
+            {/* List */}
+            <div>
+                {PRAYER_ORDER.map(key => (
+                    <PrayerCard key={key} pKey={key} myLogs={myLogs} partnerLogs={partnerLogs} />
+                ))}
+            </div>
+        </div>
+      );
+  };
+
+  const ChatView = () => {
+      return (
+          <div className="flex flex-col h-[calc(100vh-80px)] pt-4 pb-2">
+              <div className="px-4 pb-2 border-b border-gray-100">
+                  <h2 className={`text-xl font-bold ${theme.text}`}>Sohbet</h2>
+                  <p className="text-xs text-gray-400 flex items-center gap-1">
+                      {roomData?.members?.length > 1 ? `${roomData.members.find(m => m !== user.username)} ile` : 'Eşin bekleniyor...'}
+                      {syncing && <Loader2 size={10} className="animate-spin text-blue-500" />}
+                  </p>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                  {roomData?.messages?.map((msg, i) => {
+                      const isMe = msg.username === user.username;
+                      return (
+                          <motion.div
+                              initial={{ opacity: 0, y: 10 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              key={i}
+                              className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}
+                          >
+                              <div className={`max-w-[80%] p-3.5 rounded-2xl text-sm shadow-sm leading-relaxed ${isMe ? `${theme.primary} text-white rounded-br-none` : 'bg-white text-gray-700 rounded-bl-none border border-gray-100'}`}>
+                                  {msg.message}
+                              </div>
+                              <span className="text-[10px] text-gray-400 mt-1 px-1">
+                                  {msg.timestamp ? format(new Date(msg.timestamp), 'HH:mm') : ''}
+                              </span>
+                          </motion.div>
+                      )
+                  })}
+                  <div ref={chatEndRef} />
+              </div>
+
+              <div className="p-4 bg-white border-t border-gray-100">
+                <form onSubmit={handleSendMessage} className="flex gap-2">
+                    <input
+                        type="text"
+                        value={message}
+                        onChange={(e) => setMessage(e.target.value)}
+                        placeholder="Mesaj yaz..."
+                        className="flex-1 bg-gray-50 border-0 rounded-full px-5 py-3 focus:ring-2 focus:ring-opacity-50 text-sm focus:outline-none transition-all"
+                        style={{ '--tw-ring-color': theme.primary }}
+                    />
+                    <button
+                        type="submit"
+                        disabled={!message.trim()}
+                        className={`w-12 h-12 rounded-full flex items-center justify-center text-white shadow-md transition-transform active:scale-90 disabled:opacity-50 disabled:active:scale-100 ${theme.button.split(' ')[0]}`} // bg color only
+                    >
+                        <Send size={20} />
+                    </button>
+                </form>
+              </div>
+          </div>
+      );
+  };
+
+  const SettingsView = () => {
+      return (
+          <div className="p-4 pt-8 space-y-6">
+              <h2 className={`text-2xl font-bold ${theme.text} mb-6`}>Ayarlar</h2>
+
+              {/* Profile Card */}
+              <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 flex items-center gap-4">
+                  <div className={`w-14 h-14 rounded-full ${theme.secondary} flex items-center justify-center`}>
+                      <User size={24} className={theme.accent} />
+                  </div>
+                  <div>
+                      <h3 className="font-bold text-gray-800">{user.username}</h3>
+                      <p className="text-sm text-gray-500">Oda: {user.room_id}</p>
+                  </div>
+              </div>
+
+              {/* City */}
+              <div className="space-y-2">
+                  <label className="text-sm font-medium text-gray-600 ml-1">Şehir</label>
+                  <div className="bg-white p-2 rounded-xl border border-gray-200 flex items-center">
+                      <MapPin className="ml-2 text-gray-400" size={18} />
+                      <input
+                          value={city}
+                          onChange={(e) => setCity(e.target.value)}
+                          onBlur={() => { localStorage.setItem('namaz_city', city); fetchPrayerTimes(); }}
+                          className="w-full p-2 outline-none text-gray-700 font-medium"
+                      />
+                  </div>
+              </div>
+
+              {/* Themes */}
+              <div className="space-y-2">
+                  <label className="text-sm font-medium text-gray-600 ml-1">Tema</label>
+                  <div className="grid grid-cols-4 gap-3">
+                    {Object.keys(themes).map(t => (
+                        <button
+                            key={t}
+                            onClick={() => changeTheme(t)}
+                            className={`h-12 rounded-xl border-2 transition-all ${themes[t].primary} ${theme.name === themes[t].name ? 'border-gray-800 scale-105' : 'border-transparent opacity-70 hover:opacity-100'}`}
+                            title={themes[t].name}
+                        />
+                    ))}
+                  </div>
+                  <p className="text-xs text-gray-400 text-center mt-1">{theme.name}</p>
+              </div>
+
+              <button onClick={logout} className="w-full p-4 mt-8 rounded-xl bg-red-50 text-red-600 font-bold hover:bg-red-100 transition-colors flex items-center justify-center gap-2">
+                  <LogOut size={20} /> Çıkış Yap
+              </button>
+          </div>
+      );
+  };
+
   if (!user.room_id) {
+    // Basic Join Room screen (kept simple)
+    const handleJoin = async (e) => {
+        e.preventDefault();
+        const rid = e.target.roomId.value;
+        setLoading(true);
+        try {
+            await api.request('join_room', { username: user.username, room_id: rid });
+            const newUser = { ...user, room_id: rid };
+            localStorage.setItem('namaz_user', JSON.stringify(newUser));
+            window.location.reload();
+        } catch { alert("Hata"); setLoading(false); }
+    };
+
     return (
       <div className={`min-h-screen flex items-center justify-center ${theme.background} p-4`}>
-        {/* ... Login/Join Room same as before ... */}
-         <div className="bg-white p-8 rounded-2xl shadow-xl max-w-md w-full text-center">
+        <div className="bg-white p-8 rounded-3xl shadow-xl max-w-md w-full text-center">
             <Heart className={`mx-auto w-16 h-16 ${theme.text} mb-4`} />
             <h2 className="text-2xl font-bold mb-2">Hoşgeldin {user.username}!</h2>
-            <p className="text-gray-600 mb-6">Henüz bir odada değilsin. Eşinle aynı odaya girmek için bir oda ismi belirleyin.</p>
-
-            <form onSubmit={(e) => { e.preventDefault(); handleJoinRoom(e.target.roomId.value); }}>
-                <input name="roomId" type="text" placeholder="Örn: huzur_yuvam" className="w-full p-3 border rounded-lg mb-4 text-center" required />
-                <button type="submit" className={`w-full p-3 rounded-lg font-bold ${theme.button}`}>Odaya Katıl</button>
+            <p className="text-gray-600 mb-6">Bir odaya katılın.</p>
+            <form onSubmit={handleJoin}>
+                <input name="roomId" placeholder="Oda İsmi" className="w-full p-4 bg-gray-50 rounded-xl mb-4 text-center font-bold text-gray-700 outline-none focus:ring-2 focus:ring-blue-100" required />
+                <button className={`w-full p-4 rounded-xl font-bold text-white shadow-lg ${theme.button.split(' ')[0]}`}>Başla</button>
             </form>
-            <button onClick={logout} className="mt-4 text-sm text-gray-500 hover:underline">Çıkış Yap</button>
         </div>
       </div>
     );
   }
 
-  const myLogs = roomData?.logs?.[user.username] || {};
-  const partnerName = roomData?.members?.find(m => m !== user.username);
-  const partnerCity = partnerName ? roomData?.memberCities?.[partnerName] : null;
-  const partnerLogs = partnerName ? (roomData?.logs?.[partnerName] || {}) : {};
-
   return (
-    <div className={`min-h-screen ${theme.background} pb-20 md:pb-0 transition-colors duration-500`}>
-        {/* Header */}
-        <header className={`bg-white shadow-sm p-4 sticky top-0 z-10`}>
-             <div className="max-w-4xl mx-auto flex justify-between items-center">
-                <div className="flex items-center gap-2">
-                    <div className={`p-2 rounded-full ${theme.secondary}`}>
-                        <Heart size={20} className={theme.accent} />
-                    </div>
-                    <div>
-                        <h1 className={`font-bold text-lg leading-tight ${theme.text}`}>Namaz Arkadaşım</h1>
-                        <p className="text-xs text-gray-500 flex items-center gap-1">
-                            Oda: {user.room_id}
-                            {syncing && <Loader2 size={10} className="animate-spin text-blue-500" />}
-                        </p>
-                    </div>
-                </div>
+    <div className={`min-h-screen ${theme.background} overflow-hidden font-sans text-gray-800`}>
+        {/* MAIN CONTENT AREA */}
+        <AnimatePresence mode="wait">
+            <motion.div
+                key={activeTab}
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: 10 }}
+                transition={{ duration: 0.2 }}
+                className="h-full pb-20 overflow-y-auto" // Add padding bottom for navbar
+            >
+                {activeTab === 'home' && <HomeView />}
+                {activeTab === 'chat' && <ChatView />}
+                {activeTab === 'settings' && <SettingsView />}
+            </motion.div>
+        </AnimatePresence>
 
-                <div className="flex gap-2 items-center">
-                   {/* Theme Switcher */}
-                   <div className="relative">
+        {/* BOTTOM NAVBAR */}
+        <div className="fixed bottom-6 left-4 right-4 bg-white/90 backdrop-blur-md rounded-full shadow-2xl border border-white/50 p-2 flex justify-around items-center z-50 max-w-md mx-auto">
+            <button
+                onClick={() => setActiveTab('home')}
+                className={`p-3 rounded-full transition-all ${activeTab === 'home' ? `${theme.primary} text-white shadow-lg scale-110` : 'text-gray-400 hover:bg-gray-100'}`}
+            >
+                <Home size={24} />
+            </button>
+            <button
+                onClick={() => setActiveTab('chat')}
+                className={`p-3 rounded-full transition-all ${activeTab === 'chat' ? `${theme.primary} text-white shadow-lg scale-110` : 'text-gray-400 hover:bg-gray-100'}`}
+            >
+                <MessageCircle size={24} />
+            </button>
+            <button
+                onClick={() => setActiveTab('settings')}
+                className={`p-3 rounded-full transition-all ${activeTab === 'settings' ? `${theme.primary} text-white shadow-lg scale-110` : 'text-gray-400 hover:bg-gray-100'}`}
+            >
+                <Settings size={24} />
+            </button>
+        </div>
+
+        {/* CONTENT MODAL (Sweet Popup) */}
+        <AnimatePresence>
+            {showContent && (
+                <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    className="fixed inset-0 z-[60] flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm"
+                >
+                    <motion.div
+                        initial={{ scale: 0.8, opacity: 0 }}
+                        animate={{ scale: 1, opacity: 1 }}
+                        exit={{ scale: 0.8, opacity: 0 }}
+                        className="bg-white rounded-[2rem] shadow-2xl w-full max-w-sm p-8 text-center relative overflow-hidden"
+                    >
+                        <div className={`absolute top-0 left-0 w-full h-3 ${theme.primary}`}></div>
+                        <h3 className={`text-2xl font-bold mb-4 ${theme.text}`}>Allah Kabul Etsin! 🤲</h3>
+                        <div className="bg-orange-50 p-6 rounded-2xl border border-orange-100 mb-6">
+                            <span className="text-xs font-bold text-orange-400 uppercase tracking-wide mb-3 block">{contentData?.type || 'Bilgi'}</span>
+                            <p className="text-gray-700 italic leading-relaxed text-lg">"{contentData?.text}"</p>
+                        </div>
                         <button
-                            onClick={() => setIsThemeOpen(!isThemeOpen)}
-                            className={`p-2 rounded-full hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors ${isThemeOpen ? 'bg-gray-100 text-gray-600' : ''}`}
+                            onClick={() => setShowContent(false)}
+                            className={`w-full py-4 rounded-xl font-bold text-lg text-white shadow-lg ${theme.button.split(' ')[0]} active:scale-95 transition-transform`}
                         >
-                            <Palette size={20}/>
+                            Amin
                         </button>
-
-                        {isThemeOpen && (
-                            <>
-                                <div className="fixed inset-0 z-10" onClick={() => setIsThemeOpen(false)}></div>
-                                <div className="absolute right-0 top-full mt-2 bg-white shadow-xl rounded-lg p-3 z-20 flex gap-2 border border-gray-100 min-w-[150px] justify-center animate-in fade-in slide-in-from-top-2">
-                                    {Object.keys(themes).map(t => (
-                                        <button
-                                            key={t}
-                                            onClick={() => { changeTheme(t); setIsThemeOpen(false); }}
-                                            className={`w-8 h-8 rounded-full ${themes[t].primary} border-2 ${theme.name === themes[t].name ? 'border-gray-600' : 'border-transparent'} hover:scale-110 transition-transform`}
-                                            title={themes[t].name}
-                                        />
-                                    ))}
-                                </div>
-                            </>
-                        )}
-                   </div>
-                   <button onClick={logout} className="p-2 text-gray-400 hover:text-red-500"><LogOut size={20}/></button>
-                </div>
-            </div>
-
-            {/* NEXT PRAYER INDICATOR */}
-            {nextPrayer && (
-                <div className={`max-w-4xl mx-auto mt-2 text-center text-xs font-medium ${theme.text} opacity-80 animate-pulse`}>
-                    Sıradaki Vakit: {nextPrayer.key === 'Fajr' && nextPrayer.tomorrow ? 'Yarın ' : ''}{PRAYER_NAMES[nextPrayer.key] || nextPrayer.key} ({nextPrayer.time})
-                </div>
+                    </motion.div>
+                </motion.div>
             )}
-        </header>
-
-        <main className="max-w-4xl mx-auto p-4 grid gap-6 md:grid-cols-2">
-
-            {/* SOL KOLON: Namaz Takibi */}
-            <div className="space-y-6">
-
-                {/* MY PRAYER TIMES */}
-                <div className="bg-white rounded-2xl shadow-sm p-5 border border-gray-100 relative overflow-hidden group">
-                    <div className="flex justify-between items-center mb-4">
-                        <div className="flex items-center gap-2 text-gray-500 text-sm">
-                            <MapPin size={16} />
-                            <input
-                                value={city}
-                                onChange={(e) => setCity(e.target.value)}
-                                onBlur={() => { localStorage.setItem('namaz_city', city); fetchPrayerTimes(); }}
-                                className="border-b border-dashed border-gray-300 focus:outline-none w-24 text-center font-semibold"
-                            />
-                        </div>
-                        <span className="text-xs font-mono text-gray-400">{format(new Date(), 'dd MMM yyyy', { locale: tr })}</span>
-                    </div>
-
-                    <div className="grid grid-cols-5 gap-2 text-center">
-                        {['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'].map((key) => {
-                             const isCurrent = nextPrayer && nextPrayer.key === key; // Basic highlight logic (actually needs interval check)
-                             // Better logic: current if time is between key and nextKey.
-                             // But simplified: Just showing times is enough for now.
-
-                             let displayTime = prayerTimes ? prayerTimes[key] : '--:--';
-                             // Sabah namazı için aralık (Fajr - Sunrise)
-                             if (key === 'Fajr' && prayerTimes) {
-                                 displayTime = `${prayerTimes.Fajr}-${prayerTimes.Sunrise}`;
-                             }
-
-                            return (
-                                <div key={key} className={`flex flex-col items-center p-1 rounded ${isCurrent ? 'bg-gray-50' : ''}`}>
-                                    <span className="text-[10px] text-gray-400 uppercase tracking-wider mb-1">{PRAYER_NAMES[key]}</span>
-                                    <span className={`font-bold ${theme.text} text-xs md:text-sm whitespace-nowrap`}>{displayTime}</span>
-                                </div>
-                            )
-                        })}
-                    </div>
-                </div>
-
-                {/* PARTNER PRAYER TIMES (Faint) */}
-                {partnerPrayerTimes && (
-                     <div className="bg-white/50 rounded-xl p-3 border border-gray-100 grayscale opacity-70 hover:opacity-100 hover:grayscale-0 transition-all">
-                        <div className="flex items-center gap-2 mb-2 text-xs text-gray-400">
-                             <Heart size={12} />
-                             <span>{partnerName}'in Vakitleri ({partnerCity})</span>
-                        </div>
-                        <div className="grid grid-cols-5 gap-1 text-center">
-                            {['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'].map((key) => (
-                                <div key={key}>
-                                    <span className="text-[8px] text-gray-300 block">{PRAYER_NAMES[key]}</span>
-                                    <span className="text-xs font-medium text-gray-500">{partnerPrayerTimes[key]}</span>
-                                </div>
-                            ))}
-                        </div>
-                     </div>
-                )}
-
-                {/* Namaz Listesi Checkboxları */}
-                <div className="bg-white rounded-2xl shadow-sm p-2 border border-gray-100 overflow-hidden">
-                    <table className="w-full">
-                        <thead className={`${theme.secondary}`}>
-                            <tr>
-                                <th className="p-3 text-left text-xs font-semibold text-gray-600">Vakit</th>
-                                <th className="p-3 text-center text-xs font-semibold text-gray-600">Sen</th>
-                                <th className="p-3 text-center text-xs font-semibold text-gray-600">{partnerName || 'Eşin'}</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'].map((key) => {
-                                const isMyChecked = !!myLogs[PRAYER_NAMES[key]];
-                                const isPartnerChecked = !!partnerLogs[PRAYER_NAMES[key]];
-
-                                return (
-                                    <tr key={key} className={`border-b last:border-0 border-gray-50 transition-colors ${isMyChecked ? 'bg-green-50/30' : 'hover:bg-gray-50'}`}>
-                                        <td className="p-3">
-                                            <span className={`font-medium ${theme.text} ${isMyChecked ? 'line-through opacity-50' : ''}`}>{PRAYER_NAMES[key]}</span>
-                                        </td>
-                                        <td className="p-3 text-center">
-                                            <button
-                                                onClick={() => !isMyChecked && handlePrayerCheck(key, true)}
-                                                disabled={isMyChecked}
-                                                className={`transition-all duration-500 cubic-bezier(0.34, 1.56, 0.64, 1) transform active:scale-90 ${isMyChecked ? 'scale-110 cursor-default' : 'hover:scale-110 opacity-40 hover:opacity-100'}`}
-                                            >
-                                                {isMyChecked ?
-                                                    <CheckCircle className={`text-white ${theme.accent} drop-shadow-md`} size={28} fill="currentColor" /> :
-                                                    <Circle className="text-gray-300" size={28} />
-                                                }
-                                            </button>
-                                        </td>
-                                        <td className="p-3 text-center">
-                                             <div className={`transition-all duration-500 ${isPartnerChecked ? 'scale-110' : 'opacity-20 grayscale'}`}>
-                                                {isPartnerChecked ?
-                                                    <CheckCircle className="text-green-500 bg-white rounded-full shadow-sm" size={24} fill="currentColor" /> :
-                                                    <Circle className="text-gray-200" size={24} />
-                                                }
-                                             </div>
-                                        </td>
-                                    </tr>
-                                );
-                            })}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-
-            {/* SAĞ KOLON: Sohbet */}
-            <div className="h-[500px] md:h-auto bg-white rounded-2xl shadow-sm border border-gray-100 flex flex-col overflow-hidden relative">
-                <div className={`p-3 border-b border-gray-100 flex items-center gap-2 ${theme.secondary}`}>
-                    <MessageCircle size={18} className={theme.text} />
-                    <span className={`font-semibold text-sm ${theme.text}`}>Sohbet</span>
-                </div>
-
-                <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50">
-                    {roomData?.messages?.map((msg, i) => {
-                        const isMe = msg.username === user.username;
-                        return (
-                            <div key={i} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} animate-in slide-in-from-bottom-2 duration-300`}>
-                                <div className={`max-w-[80%] p-3 rounded-2xl text-sm shadow-sm ${isMe ? `${theme.primary} text-white rounded-br-none` : 'bg-white text-gray-700 rounded-bl-none'}`}>
-                                    {msg.message}
-                                </div>
-                                <span className="text-[10px] text-gray-400 mt-1 px-1">
-                                    {msg.username}, {msg.timestamp ? format(new Date(msg.timestamp), 'HH:mm') : ''}
-                                </span>
-                            </div>
-                        )
-                    })}
-                    <div ref={chatEndRef} />
-                </div>
-
-                <form onSubmit={handleSendMessage} className="p-3 bg-white border-t border-gray-100 flex gap-2">
-                    <input
-                        type="text"
-                        value={message}
-                        onChange={(e) => setMessage(e.target.value)}
-                        placeholder="Bir şeyler yaz..."
-                        className="flex-1 bg-gray-50 border-0 rounded-full px-4 py-2 focus:ring-2 focus:ring-opacity-50 text-sm focus:outline-none"
-                        style={{ '--tw-ring-color': theme.primary }}
-                    />
-                    <button type="submit" className={`p-2 rounded-full ${theme.button} transition-transform active:scale-95 disabled:opacity-50`} disabled={!message.trim()}>
-                        <Send size={18} />
-                    </button>
-                </form>
-            </div>
-        </main>
-
-        {/* CONTENT MODAL */}
-        {showContent && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in zoom-in-95 duration-200">
-                <div className="bg-white rounded-3xl shadow-2xl max-w-sm w-full p-6 relative overflow-hidden text-center transform transition-all scale-100">
-                     <div className={`absolute top-0 left-0 w-full h-3 ${theme.primary}`}></div>
-                     <h3 className={`text-xl font-bold mb-4 ${theme.text}`}>Allah Kabul Etsin! 🤲</h3>
-
-                     <div className="bg-orange-50 p-4 rounded-xl border border-orange-100 mb-6">
-                        <span className="text-xs font-bold text-orange-400 uppercase tracking-wide mb-2 block">{contentData?.type || 'Bilgi'}</span>
-                        <p className="text-gray-700 italic leading-relaxed">"{contentData?.text}"</p>
-                     </div>
-
-                     <button
-                        onClick={() => setShowContent(false)}
-                        className={`w-full py-3 rounded-xl font-bold ${theme.button} active:scale-95 transition-transform`}
-                     >
-                        Amin
-                     </button>
-                </div>
-            </div>
-        )}
+        </AnimatePresence>
     </div>
   );
 };
