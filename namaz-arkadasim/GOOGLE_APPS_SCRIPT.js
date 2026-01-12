@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- * GOOGLE APPS SCRIPT KODU (Backend)
+ * GOOGLE APPS SCRIPT KODU (Backend - v2 Optimized)
  * ============================================================================
  *
  * BU KODU KOPYALAYIP GOOGLE SHEET'İN "UZANTILAR > APPS SCRIPT" BÖLÜMÜNE YAPIŞTIRIN.
@@ -9,7 +9,7 @@
  * 1. Google Sheet oluşturun.
  * 2. Şu sekmeleri (Tabs) oluşturun: "Users", "Rooms", "Logs", "Chat", "Content".
  * 3. Sütunlar:
- *    - Users: username, password, room_id, onesignal_id, created_at
+ *    - Users: username, password, room_id, onesignal_id, created_at, city
  *    - Rooms: room_id, created_at
  *    - Logs: room_id, username, prayer_name, date, timestamp
  *    - Chat: room_id, username, message, timestamp
@@ -24,6 +24,7 @@
 // --- AYARLAR ---
 const ONESIGNAL_APP_ID = "BURAYA_ONESIGNAL_APP_ID_YAZIN";
 const ONESIGNAL_API_KEY = "BURAYA_ONESIGNAL_REST_API_KEY_YAZIN";
+const CACHE_DURATION = 30; // Saniye (Cache süresi)
 
 function doGet(e) {
   const action = e.parameter.action;
@@ -40,8 +41,6 @@ function doGet(e) {
 }
 
 function doPost(e) {
-  // doPost genellikle form verisi veya raw data olarak gelir.
-  // React'ten genellikle JSON string olarak gönderilir.
   let data;
   try {
     data = JSON.parse(e.postData.contents);
@@ -59,6 +58,8 @@ function doPost(e) {
     return logPrayer(data.username, data.room_id, data.prayer_name, data.is_checked);
   } else if (action === "send_message") {
     return sendMessage(data.username, data.room_id, data.message);
+  } else if (action === "update_city") {
+    return updateCity(data.username, data.city);
   }
 
   return ContentService.createTextOutput(JSON.stringify({error: "Invalid action"})).setMimeType(ContentService.MimeType.JSON);
@@ -66,18 +67,26 @@ function doPost(e) {
 
 // --- FONKSİYONLAR ---
 
-function loginUser(username, password) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Users");
-  const data = sheet.getDataRange().getValues();
+function getSheetData(sheetName) {
+  // Önbellekten okumayı dene (Sadece okuma ağırlıklı veriler için: Users, Content)
+  // Chat ve Logs sık değişir, cache'lemek riskli olabilir ama 5sn cache koyabiliriz.
+  // Basitlik için sadece okuma yapıyoruz, cache'i şimdilik atlıyorum çünkü veri tutarlılığı daha önemli.
+  // Google Sheet API zaten yeterince hızlı, darboğaz genellikle ağ bağlantısı.
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  return sheet.getDataRange().getValues();
+}
 
-  // Başlık satırını atla (i=1)
+function loginUser(username, password) {
+  const data = getSheetData("Users");
+
   for (let i = 1; i < data.length; i++) {
     if (data[i][0] == username && data[i][1] == password) {
       return response({
         status: "success",
         user: {
           username: data[i][0],
-          room_id: data[i][2]
+          room_id: data[i][2],
+          city: data[i][5] || "" // City column is index 5
         }
       });
     }
@@ -89,16 +98,28 @@ function registerUser(username, password, onesignal_id) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Users");
   const data = sheet.getDataRange().getValues();
 
-  // Kullanıcı var mı kontrol et
   for (let i = 1; i < data.length; i++) {
     if (data[i][0] == username) {
       return response({status: "error", message: "Bu kullanıcı adı zaten alınmış."});
     }
   }
 
-  // Yeni kullanıcı ekle
-  sheet.appendRow([username, password, "", onesignal_id, new Date()]);
+  // Username, Password, RoomID, OneSignalID, Date, City
+  sheet.appendRow([username, password, "", onesignal_id, new Date(), ""]);
   return response({status: "success", message: "Kayıt başarılı! Giriş yapabilirsiniz."});
+}
+
+function updateCity(username, city) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Users");
+  const data = sheet.getDataRange().getValues();
+
+  for (let i = 1; i < data.length; i++) {
+    if (data[i][0] == username) {
+      sheet.getRange(i + 1, 6).setValue(city); // 6. sütun City
+      return response({status: "success"});
+    }
+  }
+  return response({status: "error", message: "User not found"});
 }
 
 function joinRoom(username, room_id) {
@@ -108,7 +129,6 @@ function joinRoom(username, room_id) {
   let userFound = false;
   for (let i = 1; i < data.length; i++) {
     if (data[i][0] == username) {
-      // Odayı güncelle (3. sütun index 2)
       sheet.getRange(i + 1, 3).setValue(room_id);
       userFound = true;
       break;
@@ -124,28 +144,24 @@ function joinRoom(username, room_id) {
 function getData(room_id) {
   if (!room_id) return response({status: "error", message: "Room ID required"});
 
-  // 1. Oda üyelerini bul
-  const usersSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Users");
-  const usersData = usersSheet.getDataRange().getValues();
+  const usersData = getSheetData("Users");
   let members = [];
+  let memberCities = {};
+
   for (let i = 1; i < usersData.length; i++) {
-    if (usersData[i][2] == room_id) { // room_id match
-      members.push(usersData[i][0]); // username
+    if (usersData[i][2] == room_id) {
+      members.push(usersData[i][0]);
+      memberCities[usersData[i][0]] = usersData[i][5] || ""; // City info
     }
   }
 
-  // 2. Namaz Loglarını bul (Bugün için)
-  const logsSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Logs");
-  const logsData = logsSheet.getDataRange().getValues();
-  const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+  const logsData = getSheetData("Logs");
+  const today = new Date().toISOString().split('T')[0];
 
   let logs = {};
   for (let i = 1; i < logsData.length; i++) {
-    // logsData[i][3] date olmalı
     let rowDate = new Date(logsData[i][3]).toISOString().split('T')[0];
-
     if (logsData[i][0] == room_id && rowDate == today) {
-       // logs[username] = { fajr: true, dhuhr: true ... }
        let u = logsData[i][1];
        let p = logsData[i][2];
        if (!logs[u]) logs[u] = {};
@@ -153,12 +169,8 @@ function getData(room_id) {
     }
   }
 
-  // 3. Sohbet Mesajlarını bul (Son 20)
-  const chatSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Chat");
-  const chatData = chatSheet.getDataRange().getValues();
+  const chatData = getSheetData("Chat");
   let messages = [];
-
-  // Sondan başa doğru tara
   for (let i = chatData.length - 1; i >= 1; i--) {
     if (chatData[i][0] == room_id) {
       messages.unshift({
@@ -174,6 +186,7 @@ function getData(room_id) {
     status: "success",
     data: {
       members: members,
+      memberCities: memberCities,
       logs: logs,
       messages: messages
     }
@@ -181,6 +194,13 @@ function getData(room_id) {
 }
 
 function getContent() {
+  // Content çok değişmez, Cache kullanabiliriz (1 Saat)
+  const cache = CacheService.getScriptCache();
+  const cachedContent = cache.get("content_data");
+  if (cachedContent) {
+    return ContentService.createTextOutput(cachedContent).setMimeType(ContentService.MimeType.JSON);
+  }
+
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Content");
   const data = sheet.getDataRange().getValues();
 
@@ -193,56 +213,36 @@ function getContent() {
     });
   }
 
-  return response({status: "success", content: content});
+  const jsonResponse = JSON.stringify({status: "success", content: content});
+  cache.put("content_data", jsonResponse, 3600); // 1 saat cache
+
+  return ContentService.createTextOutput(jsonResponse).setMimeType(ContentService.MimeType.JSON);
 }
 
 function logPrayer(username, room_id, prayer_name, is_checked) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Logs");
-
-  // Eğer işaretlendiyse ekle
   if (is_checked) {
     sheet.appendRow([room_id, username, prayer_name, new Date(), new Date().toLocaleTimeString()]);
-
-    // BİLDİRİM GÖNDER
     sendNotificationToRoom(room_id, username, `${username} ${prayer_name} namazını kıldı! 🤲`);
-  } else {
-    // İşaret kaldırıldıysa... (Opsiyonel: silme işlemi karmaşık olabilir, şimdilik sadece ekleme yapalım veya son kaydı silelim)
-    // Basitlik için log tutuyoruz, frontend en son durumu gösterebilir veya bugün loglanmış mı diye bakar.
-    // Veritabanı yapımız "log" olduğu için silmek yerine "unchecked" diye bir log da atabiliriz ama
-    // şimdilik sadece "kılındı" bilgisini tutmak daha motive edici.
-    // Kullanıcı işareti kaldırırsa sheet'ten silmek zor olabilir.
-    // Çözüm: Logları okurken hepsini okuyoruz.
-    // Hatta basit olsun: Her zaman ekle. Frontend bugün var mı diye bakar.
-    // İşareti kaldırmak için: Loglara "removed" diye ekleyebiliriz ama kafa karıştırır.
-    // Şimdilik sadece check edilebilsin :)
   }
-
   return response({status: "success"});
 }
 
 function sendMessage(username, room_id, message) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Chat");
   sheet.appendRow([room_id, username, message, new Date()]);
-
-  // Bildirim gönder (Opsiyonel, çok sık olabilir. Şimdilik gönderelim)
   sendNotificationToRoom(room_id, username, `${username}: ${message}`);
-
   return response({status: "success"});
 }
-
-// --- YARDIMCI FONKSİYONLAR ---
 
 function response(data) {
   return ContentService.createTextOutput(JSON.stringify(data)).setMimeType(ContentService.MimeType.JSON);
 }
 
 function sendNotificationToRoom(room_id, sender_username, message_text) {
-  if (!ONESIGNAL_APP_ID || ONESIGNAL_APP_ID.includes("BURAYA")) return; // Ayarlanmamışsa geç
+  if (!ONESIGNAL_APP_ID || ONESIGNAL_APP_ID.includes("BURAYA")) return;
 
-  // Odedaki diğer kişilerin OneSignal ID'lerini bul
-  const usersSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Users");
-  const usersData = usersSheet.getDataRange().getValues();
-
+  const usersData = getSheetData("Users");
   let playerIds = [];
 
   for (let i = 1; i < usersData.length; i++) {
@@ -255,7 +255,6 @@ function sendNotificationToRoom(room_id, sender_username, message_text) {
 
   if (playerIds.length === 0) return;
 
-  // OneSignal API İsteği
   const url = "https://onesignal.com/api/v1/notifications";
   const payload = {
     app_id: ONESIGNAL_APP_ID,
@@ -267,9 +266,7 @@ function sendNotificationToRoom(room_id, sender_username, message_text) {
   const options = {
     method: "post",
     contentType: "application/json",
-    headers: {
-      "Authorization": "Basic " + ONESIGNAL_API_KEY
-    },
+    headers: { "Authorization": "Basic " + ONESIGNAL_API_KEY },
     payload: JSON.stringify(payload)
   };
 

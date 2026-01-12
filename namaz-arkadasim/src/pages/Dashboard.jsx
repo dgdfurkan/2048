@@ -2,11 +2,10 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import api from '../services/api';
-import { LogOut, RefreshCw, Send, CheckCircle, Circle, MapPin, Moon, Sun, MessageCircle, Heart, Palette, Loader2 } from 'lucide-react';
+import { LogOut, RefreshCw, Send, CheckCircle, Circle, MapPin, Moon, Sun, MessageCircle, Heart, Palette, Loader2, ArrowRight } from 'lucide-react';
 import axios from 'axios';
-import { format } from 'date-fns';
+import { format, isAfter, isBefore, parse } from 'date-fns';
 import { tr } from 'date-fns/locale';
-import OneSignal from 'react-onesignal';
 
 const PRAYER_NAMES = {
   Fajr: "Sabah",
@@ -22,35 +21,60 @@ const Dashboard = () => {
 
   // Data States
   const [loading, setLoading] = useState(true);
-  const [syncing, setSyncing] = useState(false); // Background sync indicator
+  const [syncing, setSyncing] = useState(false);
   const [prayerTimes, setPrayerTimes] = useState(null);
+  const [partnerPrayerTimes, setPartnerPrayerTimes] = useState(null); // Eşin namaz saatleri
   const [roomData, setRoomData] = useState(null);
   const [city, setCity] = useState(localStorage.getItem('namaz_city') || 'Istanbul');
-  const [district, setDistrict] = useState(localStorage.getItem('namaz_district') || '');
+  const [nextPrayer, setNextPrayer] = useState(null);
 
   // Chat State
   const [message, setMessage] = useState('');
   const chatEndRef = useRef(null);
   const [messagesLength, setMessagesLength] = useState(0);
-
-  // Theme Dropdown State
   const [isThemeOpen, setIsThemeOpen] = useState(false);
-
-  // Content Modal
   const [showContent, setShowContent] = useState(false);
   const [contentData, setContentData] = useState(null);
 
-  // Initial Data Load
   useEffect(() => {
     fetchData();
     fetchPrayerTimes();
 
-    // Polling for chat/logs (Every 10 seconds)
     const interval = setInterval(fetchData, 10000);
     return () => clearInterval(interval);
   }, []);
 
-  // Scroll to bottom of chat ONLY when message count increases
+  // Update city in backend on change (debounce could be good but simplicity first)
+  useEffect(() => {
+      if (city && user.username) {
+        // Fire and forget update
+        api.request('update_city', { username: user.username, city: city }).catch(console.error);
+      }
+  }, [city]);
+
+  // Fetch Partner's Prayer Times if their city is different
+  useEffect(() => {
+    if (roomData?.memberCities) {
+        const partnerName = roomData?.members?.find(m => m !== user.username);
+        const partnerCity = partnerName ? roomData.memberCities[partnerName] : null;
+
+        if (partnerCity && partnerCity !== city) {
+            fetchPartnerPrayerTimes(partnerCity);
+        }
+    }
+  }, [roomData, city]);
+
+  const fetchPartnerPrayerTimes = async (pCity) => {
+      try {
+        const today = new Date();
+        const dateStr = format(today, 'dd-MM-yyyy');
+        const res = await axios.get(`https://api.aladhan.com/v1/timingsByCity/${dateStr}?city=${pCity}&country=Turkey&method=13`);
+        setPartnerPrayerTimes(res.data.data.timings);
+      } catch (error) {
+        console.error("Partner prayer times error:", error);
+      }
+  };
+
   useEffect(() => {
     if (roomData?.messages?.length > messagesLength) {
         chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -64,9 +88,39 @@ const Dashboard = () => {
       const dateStr = format(today, 'dd-MM-yyyy');
       const res = await axios.get(`https://api.aladhan.com/v1/timingsByCity/${dateStr}?city=${city}&country=Turkey&method=13`);
       setPrayerTimes(res.data.data.timings);
+      calculateNextPrayer(res.data.data.timings);
     } catch (error) {
       console.error("Prayer times error:", error);
     }
+  };
+
+  const calculateNextPrayer = (timings) => {
+      // Simple logic to find next prayer
+      const now = new Date();
+      const timeStr = format(now, "HH:mm");
+
+      // Convert timings to comparable format
+      // Order: Fajr, Sunrise, Dhuhr, Asr, Maghrib, Isha
+      // Diyanet takvimi: Sabah namazı İmsak ile başlar, Güneş ile biter (kerahat).
+      // Ancak "vakit" olarak bir sonraki ezanı göstereceğiz.
+
+      const prayers = [
+          { key: 'Fajr', time: timings.Fajr },
+          { key: 'Sunrise', time: timings.Sunrise },
+          { key: 'Dhuhr', time: timings.Dhuhr },
+          { key: 'Asr', time: timings.Asr },
+          { key: 'Maghrib', time: timings.Maghrib },
+          { key: 'Isha', time: timings.Isha },
+      ];
+
+      for (let p of prayers) {
+          if (p.time > timeStr) {
+              setNextPrayer(p);
+              return;
+          }
+      }
+      // If all passed, next is Fajr tomorrow
+      setNextPrayer({ key: 'Fajr', time: timings.Fajr, tomorrow: true });
   };
 
   const fetchData = async () => {
@@ -74,13 +128,6 @@ const Dashboard = () => {
     try {
       const res = await api.get({ action: 'get_data', room_id: user.room_id });
       if (res.status === 'success') {
-        // Merge logic could be better but for now replacing is okay as long as we handle optimistic updates correctly
-        // But if we just replace, we might overwrite our local optimistic state if server is behind.
-        // However, standard optimistic UI assumes server eventually catches up.
-        // For chat, we append locally, so we should be careful.
-        // For simplicity in this V2, we will just setRoomData but we need to respect local changes if possible?
-        // Actually, for optimistic UI, we usually ignore the next fetch or merge it.
-        // Given the 10s polling, it's safer to just set it.
         setRoomData(res.data);
       }
     } catch (error) {
@@ -108,15 +155,12 @@ const Dashboard = () => {
   };
 
   const handlePrayerCheck = async (prayerKey, isChecked) => {
-    // 1. OPTIMISTIC UPDATE
     const prayerName = PRAYER_NAMES[prayerKey];
 
-    // Create a deep copy or new object to mutate state immediately
+    // 1. OPTIMISTIC UPDATE
     const prevRoomData = { ...roomData };
     if (!prevRoomData.logs) prevRoomData.logs = {};
     if (!prevRoomData.logs[user.username]) prevRoomData.logs[user.username] = {};
-
-    // Toggle locally
     prevRoomData.logs[user.username][prayerName] = isChecked;
     setRoomData(prevRoomData);
 
@@ -130,7 +174,6 @@ const Dashboard = () => {
             is_checked: isChecked
         });
 
-        // Fetch Content if checked
         if (isChecked) {
             const contentRes = await api.get({ action: 'get_content' });
             if (contentRes.status === 'success' && contentRes.content.length > 0) {
@@ -143,12 +186,9 @@ const Dashboard = () => {
             }
         }
     } catch (e) {
-        // Revert on error? For now just log.
         console.error("Sync error", e);
     } finally {
         setSyncing(false);
-        // We can optionally fetch data again to be sure
-        // fetchData();
     }
   };
 
@@ -157,9 +197,8 @@ const Dashboard = () => {
     if (!message.trim()) return;
 
     const msgText = message;
-    setMessage(''); // Clear input immediately
+    setMessage('');
 
-    // 1. OPTIMISTIC UPDATE
     const newMsg = {
         username: user.username,
         message: msgText,
@@ -168,13 +207,11 @@ const Dashboard = () => {
 
     const prevRoomData = { ...roomData };
     if (!prevRoomData.messages) prevRoomData.messages = [];
-    prevRoomData.messages.push(newMsg); // Append locally
+    prevRoomData.messages.push(newMsg);
     setRoomData(prevRoomData);
 
-    // Scroll immediately
     setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
 
-    // 2. BACKGROUND SYNC
     setSyncing(true);
     try {
         await api.request('send_message', {
@@ -189,12 +226,11 @@ const Dashboard = () => {
     }
   };
 
-  // --- RENDER HELPERS ---
-
   if (!user.room_id) {
     return (
       <div className={`min-h-screen flex items-center justify-center ${theme.background} p-4`}>
-        <div className="bg-white p-8 rounded-2xl shadow-xl max-w-md w-full text-center">
+        {/* ... Login/Join Room same as before ... */}
+         <div className="bg-white p-8 rounded-2xl shadow-xl max-w-md w-full text-center">
             <Heart className={`mx-auto w-16 h-16 ${theme.text} mb-4`} />
             <h2 className="text-2xl font-bold mb-2">Hoşgeldin {user.username}!</h2>
             <p className="text-gray-600 mb-6">Henüz bir odada değilsin. Eşinle aynı odaya girmek için bir oda ismi belirleyin.</p>
@@ -211,13 +247,14 @@ const Dashboard = () => {
 
   const myLogs = roomData?.logs?.[user.username] || {};
   const partnerName = roomData?.members?.find(m => m !== user.username);
+  const partnerCity = partnerName ? roomData?.memberCities?.[partnerName] : null;
   const partnerLogs = partnerName ? (roomData?.logs?.[partnerName] || {}) : {};
 
   return (
     <div className={`min-h-screen ${theme.background} pb-20 md:pb-0 transition-colors duration-500`}>
         {/* Header */}
         <header className={`bg-white shadow-sm p-4 sticky top-0 z-10`}>
-            <div className="max-w-4xl mx-auto flex justify-between items-center">
+             <div className="max-w-4xl mx-auto flex justify-between items-center">
                 <div className="flex items-center gap-2">
                     <div className={`p-2 rounded-full ${theme.secondary}`}>
                         <Heart size={20} className={theme.accent} />
@@ -232,7 +269,7 @@ const Dashboard = () => {
                 </div>
 
                 <div className="flex gap-2 items-center">
-                   {/* Theme Switcher Click-Based for Mobile */}
+                   {/* Theme Switcher */}
                    <div className="relative">
                         <button
                             onClick={() => setIsThemeOpen(!isThemeOpen)}
@@ -260,14 +297,22 @@ const Dashboard = () => {
                    <button onClick={logout} className="p-2 text-gray-400 hover:text-red-500"><LogOut size={20}/></button>
                 </div>
             </div>
+
+            {/* NEXT PRAYER INDICATOR */}
+            {nextPrayer && (
+                <div className={`max-w-4xl mx-auto mt-2 text-center text-xs font-medium ${theme.text} opacity-80 animate-pulse`}>
+                    Sıradaki Vakit: {nextPrayer.key === 'Fajr' && nextPrayer.tomorrow ? 'Yarın ' : ''}{PRAYER_NAMES[nextPrayer.key] || nextPrayer.key} ({nextPrayer.time})
+                </div>
+            )}
         </header>
 
         <main className="max-w-4xl mx-auto p-4 grid gap-6 md:grid-cols-2">
 
             {/* SOL KOLON: Namaz Takibi */}
             <div className="space-y-6">
-                {/* Namaz Vakitleri & Şehir */}
-                <div className="bg-white rounded-2xl shadow-sm p-5 border border-gray-100">
+
+                {/* MY PRAYER TIMES */}
+                <div className="bg-white rounded-2xl shadow-sm p-5 border border-gray-100 relative overflow-hidden group">
                     <div className="flex justify-between items-center mb-4">
                         <div className="flex items-center gap-2 text-gray-500 text-sm">
                             <MapPin size={16} />
@@ -275,21 +320,51 @@ const Dashboard = () => {
                                 value={city}
                                 onChange={(e) => setCity(e.target.value)}
                                 onBlur={() => { localStorage.setItem('namaz_city', city); fetchPrayerTimes(); }}
-                                className="border-b border-dashed border-gray-300 focus:outline-none w-24 text-center"
+                                className="border-b border-dashed border-gray-300 focus:outline-none w-24 text-center font-semibold"
                             />
                         </div>
                         <span className="text-xs font-mono text-gray-400">{format(new Date(), 'dd MMM yyyy', { locale: tr })}</span>
                     </div>
 
                     <div className="grid grid-cols-5 gap-2 text-center">
-                        {['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'].map((key) => (
-                            <div key={key} className="flex flex-col items-center">
-                                <span className="text-[10px] text-gray-400 uppercase tracking-wider mb-1">{PRAYER_NAMES[key]}</span>
-                                <span className={`font-bold ${theme.text} text-sm`}>{prayerTimes ? prayerTimes[key] : '--:--'}</span>
-                            </div>
-                        ))}
+                        {['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'].map((key) => {
+                             const isCurrent = nextPrayer && nextPrayer.key === key; // Basic highlight logic (actually needs interval check)
+                             // Better logic: current if time is between key and nextKey.
+                             // But simplified: Just showing times is enough for now.
+
+                             let displayTime = prayerTimes ? prayerTimes[key] : '--:--';
+                             // Sabah namazı için aralık (Fajr - Sunrise)
+                             if (key === 'Fajr' && prayerTimes) {
+                                 displayTime = `${prayerTimes.Fajr}-${prayerTimes.Sunrise}`;
+                             }
+
+                            return (
+                                <div key={key} className={`flex flex-col items-center p-1 rounded ${isCurrent ? 'bg-gray-50' : ''}`}>
+                                    <span className="text-[10px] text-gray-400 uppercase tracking-wider mb-1">{PRAYER_NAMES[key]}</span>
+                                    <span className={`font-bold ${theme.text} text-xs md:text-sm whitespace-nowrap`}>{displayTime}</span>
+                                </div>
+                            )
+                        })}
                     </div>
                 </div>
+
+                {/* PARTNER PRAYER TIMES (Faint) */}
+                {partnerPrayerTimes && (
+                     <div className="bg-white/50 rounded-xl p-3 border border-gray-100 grayscale opacity-70 hover:opacity-100 hover:grayscale-0 transition-all">
+                        <div className="flex items-center gap-2 mb-2 text-xs text-gray-400">
+                             <Heart size={12} />
+                             <span>{partnerName}'in Vakitleri ({partnerCity})</span>
+                        </div>
+                        <div className="grid grid-cols-5 gap-1 text-center">
+                            {['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'].map((key) => (
+                                <div key={key}>
+                                    <span className="text-[8px] text-gray-300 block">{PRAYER_NAMES[key]}</span>
+                                    <span className="text-xs font-medium text-gray-500">{partnerPrayerTimes[key]}</span>
+                                </div>
+                            ))}
+                        </div>
+                     </div>
+                )}
 
                 {/* Namaz Listesi Checkboxları */}
                 <div className="bg-white rounded-2xl shadow-sm p-2 border border-gray-100 overflow-hidden">
@@ -307,26 +382,26 @@ const Dashboard = () => {
                                 const isPartnerChecked = !!partnerLogs[PRAYER_NAMES[key]];
 
                                 return (
-                                    <tr key={key} className="border-b last:border-0 border-gray-50 hover:bg-gray-50 transition-colors">
+                                    <tr key={key} className={`border-b last:border-0 border-gray-50 transition-colors ${isMyChecked ? 'bg-green-50/30' : 'hover:bg-gray-50'}`}>
                                         <td className="p-3">
-                                            <span className={`font-medium ${theme.text}`}>{PRAYER_NAMES[key]}</span>
+                                            <span className={`font-medium ${theme.text} ${isMyChecked ? 'line-through opacity-50' : ''}`}>{PRAYER_NAMES[key]}</span>
                                         </td>
                                         <td className="p-3 text-center">
                                             <button
                                                 onClick={() => !isMyChecked && handlePrayerCheck(key, true)}
                                                 disabled={isMyChecked}
-                                                className={`transition-all duration-300 transform active:scale-95 ${isMyChecked ? 'scale-110 cursor-default' : 'hover:scale-110 opacity-50 hover:opacity-100'}`}
+                                                className={`transition-all duration-500 cubic-bezier(0.34, 1.56, 0.64, 1) transform active:scale-90 ${isMyChecked ? 'scale-110 cursor-default' : 'hover:scale-110 opacity-40 hover:opacity-100'}`}
                                             >
                                                 {isMyChecked ?
-                                                    <CheckCircle className={`text-white ${theme.accent}`} size={24} fill="currentColor" /> :
-                                                    <Circle className="text-gray-300" size={24} />
+                                                    <CheckCircle className={`text-white ${theme.accent} drop-shadow-md`} size={28} fill="currentColor" /> :
+                                                    <Circle className="text-gray-300" size={28} />
                                                 }
                                             </button>
                                         </td>
                                         <td className="p-3 text-center">
-                                             <div className={`transition-all duration-500 ${isPartnerChecked ? 'scale-110' : 'opacity-30'}`}>
+                                             <div className={`transition-all duration-500 ${isPartnerChecked ? 'scale-110' : 'opacity-20 grayscale'}`}>
                                                 {isPartnerChecked ?
-                                                    <CheckCircle className="text-green-500 bg-white rounded-full" size={24} fill="currentColor" /> :
+                                                    <CheckCircle className="text-green-500 bg-white rounded-full shadow-sm" size={24} fill="currentColor" /> :
                                                     <Circle className="text-gray-200" size={24} />
                                                 }
                                              </div>
@@ -340,7 +415,7 @@ const Dashboard = () => {
             </div>
 
             {/* SAĞ KOLON: Sohbet */}
-            <div className="h-[500px] md:h-auto bg-white rounded-2xl shadow-sm border border-gray-100 flex flex-col overflow-hidden">
+            <div className="h-[500px] md:h-auto bg-white rounded-2xl shadow-sm border border-gray-100 flex flex-col overflow-hidden relative">
                 <div className={`p-3 border-b border-gray-100 flex items-center gap-2 ${theme.secondary}`}>
                     <MessageCircle size={18} className={theme.text} />
                     <span className={`font-semibold text-sm ${theme.text}`}>Sohbet</span>
@@ -350,7 +425,7 @@ const Dashboard = () => {
                     {roomData?.messages?.map((msg, i) => {
                         const isMe = msg.username === user.username;
                         return (
-                            <div key={i} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} animate-in slide-in-from-bottom-2`}>
+                            <div key={i} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} animate-in slide-in-from-bottom-2 duration-300`}>
                                 <div className={`max-w-[80%] p-3 rounded-2xl text-sm shadow-sm ${isMe ? `${theme.primary} text-white rounded-br-none` : 'bg-white text-gray-700 rounded-bl-none'}`}>
                                     {msg.message}
                                 </div>

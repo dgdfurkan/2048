@@ -24,7 +24,7 @@ Web sitesinin tüm verileri (kullanıcılar, sohbetler, namaz takibi) sizin Goog
 
 3.  **Başlık Satırlarını Ekleyin (İlk satırlar):**
     Her sayfanın 1. satırına şu başlıkları yazın:
-    *   **Users:** `username`, `password`, `room_id`, `onesignal_id`, `created_at`
+    *   **Users:** `username`, `password`, `room_id`, `onesignal_id`, `created_at`, `city`
     *   **Rooms:** `room_id`, `created_at`
     *   **Logs:** `room_id`, `username`, `prayer_name`, `date`, `timestamp`
     *   **Chat:** `room_id`, `username`, `message`, `timestamp`
