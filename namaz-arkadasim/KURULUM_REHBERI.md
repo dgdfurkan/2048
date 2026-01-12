@@ -59,7 +59,9 @@ Tarayıcı kapalıyken bile bildirim gelmesi için OneSignal kullanacağız.
         *   Site URL: Şimdilik `http://localhost:5173` yazın (Netlify'a atınca güncelleyeceğiz).
     *   **Save** deyin.
 4.  **Keys (Anahtarlar):**
-    *   Size `App ID` ve `API Key` verecek. Bunları bir kenara not edin.
+    *   **Settings** (Ayarlar) sekmesine tıklayın.
+    *   Açılan menüden **Keys & IDs** kısmına girin.
+    *   Burada **OneSignal App ID** ve **REST API Key** göreceksiniz. Bunları kopyalayın.
     *   **ÖNEMLİ:**
         *   Google Apps Script kodundaki `ONESIGNAL_APP_ID` ve `ONESIGNAL_API_KEY` kısımlarına bu değerleri yapıştırın ve Script'i tekrar kaydedin.
         *   Bilgisayarınızdaki proje klasöründe `src/App.jsx` dosyasını açın. Oradaki `ONESIGNAL_APP_ID_BURAYA` yazan yere `App ID`nizi yapıştırın.
