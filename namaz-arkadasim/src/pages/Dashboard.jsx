@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import api from '../services/api';
-import { LogOut, RefreshCw, Send, CheckCircle, Circle, MapPin, Moon, Sun, MessageCircle, Heart, Palette } from 'lucide-react';
+import { LogOut, RefreshCw, Send, CheckCircle, Circle, MapPin, Moon, Sun, MessageCircle, Heart, Palette, Loader2 } from 'lucide-react';
 import axios from 'axios';
 import { format } from 'date-fns';
 import { tr } from 'date-fns/locale';
@@ -22,6 +22,7 @@ const Dashboard = () => {
 
   // Data States
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false); // Background sync indicator
   const [prayerTimes, setPrayerTimes] = useState(null);
   const [roomData, setRoomData] = useState(null);
   const [city, setCity] = useState(localStorage.getItem('namaz_city') || 'Istanbul');
@@ -30,16 +31,14 @@ const Dashboard = () => {
   // Chat State
   const [message, setMessage] = useState('');
   const chatEndRef = useRef(null);
+  const [messagesLength, setMessagesLength] = useState(0);
+
+  // Theme Dropdown State
+  const [isThemeOpen, setIsThemeOpen] = useState(false);
 
   // Content Modal
   const [showContent, setShowContent] = useState(false);
   const [contentData, setContentData] = useState(null);
-
-  // OneSignal Init (Basit Check)
-  useEffect(() => {
-    // OneSignal başlatma işlemi normalde App.jsx'te olur ama burada ID update yapacağız
-    // Şimdilik pas geçiyoruz, kurulum rehberinde anlatacağız.
-  }, []);
 
   // Initial Data Load
   useEffect(() => {
@@ -51,19 +50,19 @@ const Dashboard = () => {
     return () => clearInterval(interval);
   }, []);
 
-  // Scroll to bottom of chat
+  // Scroll to bottom of chat ONLY when message count increases
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (roomData?.messages?.length > messagesLength) {
+        chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        setMessagesLength(roomData.messages.length);
+    }
   }, [roomData?.messages]);
 
   const fetchPrayerTimes = async () => {
     try {
-      // Aladhan API
-      // City search logic is complex, defaulting to Istanbul for MVP or simple input
-      // Kullanıcıdan basit text input alıp API'ye soralım.
       const today = new Date();
       const dateStr = format(today, 'dd-MM-yyyy');
-      const res = await axios.get(`https://api.aladhan.com/v1/timingsByCity/${dateStr}?city=${city}&country=Turkey&method=13`); // Method 13: Diyanet
+      const res = await axios.get(`https://api.aladhan.com/v1/timingsByCity/${dateStr}?city=${city}&country=Turkey&method=13`);
       setPrayerTimes(res.data.data.timings);
     } catch (error) {
       console.error("Prayer times error:", error);
@@ -75,6 +74,13 @@ const Dashboard = () => {
     try {
       const res = await api.get({ action: 'get_data', room_id: user.room_id });
       if (res.status === 'success') {
+        // Merge logic could be better but for now replacing is okay as long as we handle optimistic updates correctly
+        // But if we just replace, we might overwrite our local optimistic state if server is behind.
+        // However, standard optimistic UI assumes server eventually catches up.
+        // For chat, we append locally, so we should be careful.
+        // For simplicity in this V2, we will just setRoomData but we need to respect local changes if possible?
+        // Actually, for optimistic UI, we usually ignore the next fetch or merge it.
+        // Given the 10s polling, it's safer to just set it.
         setRoomData(res.data);
       }
     } catch (error) {
@@ -90,9 +96,6 @@ const Dashboard = () => {
     try {
       const res = await api.request('join_room', { username: user.username, room_id: roomId });
       if (res.status === 'success') {
-        // Auth user'ı güncellememiz lazım ama basitçe reload yapalım veya user objesini güncelleyelim
-        // Ancak AuthContext'te update metodu yok, logout yapıp girmesi gerekebilir veya sayfayı yenilemek.
-        // Basit çözüm:
         const newUser = { ...user, room_id: roomId };
         localStorage.setItem('namaz_user', JSON.stringify(newUser));
         window.location.reload();
@@ -105,53 +108,85 @@ const Dashboard = () => {
   };
 
   const handlePrayerCheck = async (prayerKey, isChecked) => {
-    // Optimistic Update
-    // ...
-
-    // Backend Call
+    // 1. OPTIMISTIC UPDATE
     const prayerName = PRAYER_NAMES[prayerKey];
-    await api.request('log_prayer', {
-        username: user.username,
-        room_id: user.room_id,
-        prayer_name: prayerName,
-        is_checked: isChecked
-    });
 
-    // Fetch Content if checked
-    if (isChecked) {
-        // Şimdilik hardcoded veya API'den çekebilirdik.
-        // API'den "get_content" ile tüm içeriği çekip içinden seçebiliriz.
-        const contentRes = await api.get({ action: 'get_content' });
-        if (contentRes.status === 'success' && contentRes.content.length > 0) {
-            // Rastgele veya namaz adına göre filtrele
-            // Basitlik için rastgele bir içerik gösterelim
-            const randomContent = contentRes.content[Math.floor(Math.random() * contentRes.content.length)];
-            setContentData(randomContent);
-            setShowContent(true);
-        } else {
-             // Fallback
-             setContentData({ text: "Allah kabul etsin!", type: "Dua" });
-             setShowContent(true);
+    // Create a deep copy or new object to mutate state immediately
+    const prevRoomData = { ...roomData };
+    if (!prevRoomData.logs) prevRoomData.logs = {};
+    if (!prevRoomData.logs[user.username]) prevRoomData.logs[user.username] = {};
+
+    // Toggle locally
+    prevRoomData.logs[user.username][prayerName] = isChecked;
+    setRoomData(prevRoomData);
+
+    // 2. BACKGROUND SYNC
+    setSyncing(true);
+    try {
+        await api.request('log_prayer', {
+            username: user.username,
+            room_id: user.room_id,
+            prayer_name: prayerName,
+            is_checked: isChecked
+        });
+
+        // Fetch Content if checked
+        if (isChecked) {
+            const contentRes = await api.get({ action: 'get_content' });
+            if (contentRes.status === 'success' && contentRes.content.length > 0) {
+                const randomContent = contentRes.content[Math.floor(Math.random() * contentRes.content.length)];
+                setContentData(randomContent);
+                setShowContent(true);
+            } else {
+                setContentData({ text: "Allah kabul etsin!", type: "Dua" });
+                setShowContent(true);
+            }
         }
+    } catch (e) {
+        // Revert on error? For now just log.
+        console.error("Sync error", e);
+    } finally {
+        setSyncing(false);
+        // We can optionally fetch data again to be sure
+        // fetchData();
     }
-
-    fetchData(); // Refresh logs
   };
 
   const handleSendMessage = async (e) => {
     e.preventDefault();
     if (!message.trim()) return;
 
-    const msg = message;
+    const msgText = message;
     setMessage(''); // Clear input immediately
 
-    await api.request('send_message', {
+    // 1. OPTIMISTIC UPDATE
+    const newMsg = {
         username: user.username,
-        room_id: user.room_id,
-        message: msg
-    });
+        message: msgText,
+        timestamp: new Date().toISOString()
+    };
 
-    fetchData(); // Refresh chat
+    const prevRoomData = { ...roomData };
+    if (!prevRoomData.messages) prevRoomData.messages = [];
+    prevRoomData.messages.push(newMsg); // Append locally
+    setRoomData(prevRoomData);
+
+    // Scroll immediately
+    setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+
+    // 2. BACKGROUND SYNC
+    setSyncing(true);
+    try {
+        await api.request('send_message', {
+            username: user.username,
+            room_id: user.room_id,
+            message: msgText
+        });
+    } catch (e) {
+        console.error("Message send error", e);
+    } finally {
+        setSyncing(false);
+    }
   };
 
   // --- RENDER HELPERS ---
@@ -179,7 +214,7 @@ const Dashboard = () => {
   const partnerLogs = partnerName ? (roomData?.logs?.[partnerName] || {}) : {};
 
   return (
-    <div className={`min-h-screen ${theme.background} pb-20 md:pb-0`}>
+    <div className={`min-h-screen ${theme.background} pb-20 md:pb-0 transition-colors duration-500`}>
         {/* Header */}
         <header className={`bg-white shadow-sm p-4 sticky top-0 z-10`}>
             <div className="max-w-4xl mx-auto flex justify-between items-center">
@@ -189,19 +224,38 @@ const Dashboard = () => {
                     </div>
                     <div>
                         <h1 className={`font-bold text-lg leading-tight ${theme.text}`}>Namaz Arkadaşım</h1>
-                        <p className="text-xs text-gray-500">Oda: {user.room_id}</p>
+                        <p className="text-xs text-gray-500 flex items-center gap-1">
+                            Oda: {user.room_id}
+                            {syncing && <Loader2 size={10} className="animate-spin text-blue-500" />}
+                        </p>
                     </div>
                 </div>
 
-                <div className="flex gap-2">
-                   {/* Theme Switcher Tiny */}
-                   <div className="relative group">
-                        <button className="p-2 text-gray-400 hover:text-gray-600"><Palette size={20}/></button>
-                        <div className="absolute right-0 top-full mt-2 bg-white shadow-xl rounded-lg p-2 hidden group-hover:flex gap-1 border border-gray-100">
-                            {Object.keys(themes).map(t => (
-                                <button key={t} onClick={() => changeTheme(t)} className={`w-6 h-6 rounded-full ${themes[t].primary}`} title={themes[t].name} />
-                            ))}
-                        </div>
+                <div className="flex gap-2 items-center">
+                   {/* Theme Switcher Click-Based for Mobile */}
+                   <div className="relative">
+                        <button
+                            onClick={() => setIsThemeOpen(!isThemeOpen)}
+                            className={`p-2 rounded-full hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors ${isThemeOpen ? 'bg-gray-100 text-gray-600' : ''}`}
+                        >
+                            <Palette size={20}/>
+                        </button>
+
+                        {isThemeOpen && (
+                            <>
+                                <div className="fixed inset-0 z-10" onClick={() => setIsThemeOpen(false)}></div>
+                                <div className="absolute right-0 top-full mt-2 bg-white shadow-xl rounded-lg p-3 z-20 flex gap-2 border border-gray-100 min-w-[150px] justify-center animate-in fade-in slide-in-from-top-2">
+                                    {Object.keys(themes).map(t => (
+                                        <button
+                                            key={t}
+                                            onClick={() => { changeTheme(t); setIsThemeOpen(false); }}
+                                            className={`w-8 h-8 rounded-full ${themes[t].primary} border-2 ${theme.name === themes[t].name ? 'border-gray-600' : 'border-transparent'} hover:scale-110 transition-transform`}
+                                            title={themes[t].name}
+                                        />
+                                    ))}
+                                </div>
+                            </>
+                        )}
                    </div>
                    <button onClick={logout} className="p-2 text-gray-400 hover:text-red-500"><LogOut size={20}/></button>
                 </div>
@@ -221,7 +275,7 @@ const Dashboard = () => {
                                 value={city}
                                 onChange={(e) => setCity(e.target.value)}
                                 onBlur={() => { localStorage.setItem('namaz_city', city); fetchPrayerTimes(); }}
-                                className="border-b border-dashed border-gray-300 focus:outline-none w-24"
+                                className="border-b border-dashed border-gray-300 focus:outline-none w-24 text-center"
                             />
                         </div>
                         <span className="text-xs font-mono text-gray-400">{format(new Date(), 'dd MMM yyyy', { locale: tr })}</span>
@@ -261,7 +315,7 @@ const Dashboard = () => {
                                             <button
                                                 onClick={() => !isMyChecked && handlePrayerCheck(key, true)}
                                                 disabled={isMyChecked}
-                                                className={`transition-all duration-300 transform ${isMyChecked ? 'scale-110' : 'hover:scale-110 opacity-50 hover:opacity-100'}`}
+                                                className={`transition-all duration-300 transform active:scale-95 ${isMyChecked ? 'scale-110 cursor-default' : 'hover:scale-110 opacity-50 hover:opacity-100'}`}
                                             >
                                                 {isMyChecked ?
                                                     <CheckCircle className={`text-white ${theme.accent}`} size={24} fill="currentColor" /> :
@@ -296,7 +350,7 @@ const Dashboard = () => {
                     {roomData?.messages?.map((msg, i) => {
                         const isMe = msg.username === user.username;
                         return (
-                            <div key={i} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
+                            <div key={i} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} animate-in slide-in-from-bottom-2`}>
                                 <div className={`max-w-[80%] p-3 rounded-2xl text-sm shadow-sm ${isMe ? `${theme.primary} text-white rounded-br-none` : 'bg-white text-gray-700 rounded-bl-none'}`}>
                                     {msg.message}
                                 </div>
@@ -318,7 +372,7 @@ const Dashboard = () => {
                         className="flex-1 bg-gray-50 border-0 rounded-full px-4 py-2 focus:ring-2 focus:ring-opacity-50 text-sm focus:outline-none"
                         style={{ '--tw-ring-color': theme.primary }}
                     />
-                    <button type="submit" className={`p-2 rounded-full ${theme.button} transition-transform active:scale-95`}>
+                    <button type="submit" className={`p-2 rounded-full ${theme.button} transition-transform active:scale-95 disabled:opacity-50`} disabled={!message.trim()}>
                         <Send size={18} />
                     </button>
                 </form>
@@ -327,7 +381,7 @@ const Dashboard = () => {
 
         {/* CONTENT MODAL */}
         {showContent && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in">
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in zoom-in-95 duration-200">
                 <div className="bg-white rounded-3xl shadow-2xl max-w-sm w-full p-6 relative overflow-hidden text-center transform transition-all scale-100">
                      <div className={`absolute top-0 left-0 w-full h-3 ${theme.primary}`}></div>
                      <h3 className={`text-xl font-bold mb-4 ${theme.text}`}>Allah Kabul Etsin! 🤲</h3>
@@ -339,7 +393,7 @@ const Dashboard = () => {
 
                      <button
                         onClick={() => setShowContent(false)}
-                        className={`w-full py-3 rounded-xl font-bold ${theme.button}`}
+                        className={`w-full py-3 rounded-xl font-bold ${theme.button} active:scale-95 transition-transform`}
                      >
                         Amin
                      </button>
