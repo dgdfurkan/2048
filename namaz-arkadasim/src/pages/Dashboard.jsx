@@ -171,7 +171,17 @@ const Dashboard = () => {
         if (isChecked) {
             const contentRes = await api.get({ action: 'get_content' });
             if (contentRes.status === 'success' && contentRes.content.length > 0) {
-                const randomContent = contentRes.content[Math.floor(Math.random() * contentRes.content.length)];
+                // Filter content based on prayerName or 'Hepsi'
+                const filteredContent = contentRes.content.filter(c =>
+                    !c.prayer_name ||
+                    c.prayer_name.toLowerCase() === 'hepsi' ||
+                    c.prayer_name.toLowerCase() === prayerName.toLowerCase() ||
+                    c.prayer_name.toLowerCase() === prayerKey.toLowerCase()
+                );
+
+                const pool = filteredContent.length > 0 ? filteredContent : contentRes.content;
+                const randomContent = pool[Math.floor(Math.random() * pool.length)];
+
                 setContentData(randomContent);
                 setShowContent(true);
             } else {
